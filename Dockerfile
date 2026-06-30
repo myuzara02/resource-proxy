@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:22-slim
 
 WORKDIR /app
 
@@ -9,8 +9,5 @@ RUN npm ci --only=production
 # Copy the rest of the application code
 COPY . .
 
-# Hugging Face Spaces requires port 7860
-EXPOSE 7860
-ENV PORT=7860
-
+# Let the hosting provider (Render) set the PORT environment variable dynamically
 CMD ["node", "master-proxy.js"]

@@ -563,6 +563,7 @@ async function proxyExternal(req, res, domain, extPath, targetOrigin) {
       method: req.method,
       headers: getForwardHeaders(req.headers, targetOrigin),
       redirect: 'follow',
+      timeout: 8000,
     };
     
     let reqBodyStr = '';
@@ -620,6 +621,7 @@ async function proxyAsset(res, targetUrl, targetOrigin) {
         'Referer': targetOrigin + '/',
       },
       redirect: 'follow',
+      timeout: 8000,
     });
     const contentType = response.headers.get('content-type') || 'application/octet-stream';
     res.writeHead(response.status, {
@@ -1796,6 +1798,7 @@ const server = http.createServer(async (req, res) => {
 
     const fetchResponse = await fetch(TARGET_ORIGIN + proxyReqPath, {
       headers: getForwardHeaders(req.headers, TARGET_ORIGIN),
+      timeout: 8000,
     });
 
     if (fetchResponse.status >= 300 && fetchResponse.status < 400) {

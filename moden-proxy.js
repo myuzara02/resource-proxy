@@ -5,20 +5,22 @@ const path = require('path');
 const fs = require('fs');
 const { URL } = require('url');
 
-const PORT = process.env.PORT || 3456;
-const TARGET_ORIGIN = 'https://www.osmo.supply';
-const CACHE_DIR = path.join(__dirname, '.cache');
+const PORT = process.env.PORT || 3457;
+const TARGET_ORIGIN = 'https://moden.club';
+const CACHE_DIR = path.join(__dirname, '.cache_moden');
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours in ms
 
-// Known osmo subdomains to proxy through for CORS
 const PROXIED_DOMAINS = [
-  'updates.osmo.supply',
+  'cdn.prod.website-files.com',
+  'cdn.moden.club',
   'config.outseta.com',
   'cdn.outseta.com',
-  'osmo.outseta.com',
-  'cdn.prod.website-files.com',
-  'osmo.b-cdn.net',
-  'slater.app',
+  'modenclub.outseta.com',
+  'code-editor.moden.workers.dev',
+  'html-to-webflow.moden.workers.dev',
+  'asset-editor.moden.workers.dev',
+  'layout-wizard.moden.workers.dev',
+  'css-animator.moden.workers.dev',
 ];
 
 // ─── Cache System ────────────────────────────────────────────────────────
@@ -107,7 +109,7 @@ function listCacheEntries() {
 // This prevents "Outseta not found" errors from dependent scripts
 const OUTSETA_MOCK_SCRIPT = `
 <script>
-// Osmo Proxy: Mock Outseta to prevent errors in dependent scripts
+// Osmo Proxy: Mock Outseta with premium active subscription
 (function() {
   var noopFn = function() { return Promise.resolve(); };
   var noopObj = new Proxy({}, { get: function(t, p) {
@@ -115,12 +117,38 @@ const OUTSETA_MOCK_SCRIPT = `
     return typeof p === 'string' ? noopFn : undefined;
   }});
   
+  var mockUser = {
+    Email: 'premium_user@example.com',
+    FirstName: 'Premium',
+    LastName: 'User',
+    FullName: 'Premium User',
+    Uid: 'mock_uid_12345',
+    Account: {
+      Name: 'Premium Account',
+      AccountStage: 2, // Active stage
+      CurrentSubscription: {
+        Plan: {
+          Name: 'Premium All-Access',
+          Uid: 'mock_plan_premium'
+        },
+        StartDate: new Date().toISOString(),
+        EndDate: new Date(Date.now() + 365*24*60*60*1000).toISOString()
+      }
+    }
+  };
+  
   window.Outseta = window.Outseta || {
-    on: function() {},
+    on: function(event, callback) {
+      if (typeof callback === 'function') {
+        if (event === 'subscription.created' || event === 'subscription.updated') {
+          // Trigger callbacks if needed
+        }
+      }
+    },
     off: function() {},
     emit: function() {},
-    getUser: function() { return Promise.resolve(null); },
-    getAccessToken: function() { return Promise.resolve(null); },
+    getUser: function() { return Promise.resolve(mockUser); },
+    getAccessToken: function() { return Promise.resolve('mock_access_token_jwt_signature'); },
     isReady: function() { return Promise.resolve(true); },
     auth: noopObj,
     profile: noopObj,
@@ -186,6 +214,9 @@ function stripProtection(html, requestPath) {
     }
   });
 
+  // Force auth state to subscribed
+  $('html').attr('data-auth', 'subscribed');
+
   // 5. Inject Outseta mock as FIRST script in <head> so it's available to all
   $('head').prepend(OUTSETA_MOCK_SCRIPT);
 
@@ -193,13 +224,6 @@ function stripProtection(html, requestPath) {
   $('[data-o-anonymous]').removeAttr('data-o-anonymous');
   $('[data-o-auth]').removeAttr('data-o-auth');
   $('[data-o-logout]').removeAttr('data-o-logout');
-
-  // 7. Rewrite URLs pointing to osmo subdomains to go through our proxy
-  //    e.g. https://updates.osmo.supply/info → /__ext__/updates.osmo.supply/info
-  PROXIED_DOMAINS.forEach(domain => {
-    const regex = new RegExp(`https?://${domain.replace(/\./g, '\\.')}`, 'g');
-    html = $.html();
-  });
 
   // 8. Rewrite internal links to go through proxy
   $('a[href]').each((_, el) => {
@@ -219,32 +243,65 @@ function stripProtection(html, requestPath) {
   var proxyDomains = ${JSON.stringify(PROXIED_DOMAINS)};
   var _origFetch = window.fetch;
   
-  window.fetch = function(url, opts) {
-    if (typeof url === 'string') {
-      for (var i = 0; i < proxyDomains.length; i++) {
-        var domainPattern = 'https://' + proxyDomains[i];
-        if (url.indexOf(domainPattern) === 0) {
-          url = '/__ext__/' + proxyDomains[i] + url.slice(domainPattern.length);
-          break;
-        }
-        domainPattern = 'http://' + proxyDomains[i];
-        if (url.indexOf(domainPattern) === 0) {
-          url = '/__ext__/' + proxyDomains[i] + url.slice(domainPattern.length);
-          break;
-        }
+  window.fetch = function(input, init) {
+    var url;
+    if (typeof input === 'string') {
+      url = input;
+    } else if (input instanceof URL) {
+      url = input.href;
+    } else if (input && typeof input === 'object' && input.url) {
+      url = input.url;
+    } else {
+      url = String(input);
+    }
+    
+    var modified = false;
+    for (var i = 0; i < proxyDomains.length; i++) {
+      var domainPattern = 'https://' + proxyDomains[i];
+      var httpDomainPattern = 'http://' + proxyDomains[i];
+      var doubleSlashPattern = '//' + proxyDomains[i];
+      if (url.indexOf(domainPattern) === 0) {
+        url = '/__ext__/' + proxyDomains[i] + url.slice(domainPattern.length);
+        modified = true;
+        break;
+      } else if (url.indexOf(httpDomainPattern) === 0) {
+        url = '/__ext__/' + proxyDomains[i] + url.slice(httpDomainPattern.length);
+        modified = true;
+        break;
+      } else if (url.indexOf(doubleSlashPattern) === 0) {
+        url = '/__ext__/' + proxyDomains[i] + url.slice(doubleSlashPattern.length);
+        modified = true;
+        break;
       }
     }
-    return _origFetch.call(this, url, opts);
+    
+    if (modified) {
+      if (input instanceof Request) {
+        var newRequest = new Request(url, input);
+        return _origFetch.call(this, newRequest, init);
+      }
+      return _origFetch.call(this, url, init);
+    }
+    return _origFetch.call(this, input, init);
   };
 
   // Also intercept XMLHttpRequest
   var _origOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
-    if (typeof url === 'string') {
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : (url instanceof URL ? url.href : String(url));
       for (var i = 0; i < proxyDomains.length; i++) {
         var domainPattern = 'https://' + proxyDomains[i];
-        if (url.indexOf(domainPattern) === 0) {
-          url = '/__ext__/' + proxyDomains[i] + url.slice(domainPattern.length);
+        var httpDomainPattern = 'http://' + proxyDomains[i];
+        var doubleSlashPattern = '//' + proxyDomains[i];
+        if (urlStr.indexOf(domainPattern) === 0) {
+          url = '/__ext__/' + proxyDomains[i] + urlStr.slice(domainPattern.length);
+          break;
+        } else if (urlStr.indexOf(httpDomainPattern) === 0) {
+          url = '/__ext__/' + proxyDomains[i] + urlStr.slice(httpDomainPattern.length);
+          break;
+        } else if (urlStr.indexOf(doubleSlashPattern) === 0) {
+          url = '/__ext__/' + proxyDomains[i] + urlStr.slice(doubleSlashPattern.length);
           break;
         }
       }
@@ -264,23 +321,31 @@ function stripProtection(html, requestPath) {
       right: 16px; 
       z-index: 999999;
       background: linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 100%);
-      color: #a0ffa0;
+      color: #ffa0a0;
       padding: 10px 18px;
       border-radius: 10px;
       font-family: 'SF Mono', 'Fira Code', monospace;
       font-size: 12px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-      border: 1px solid rgba(160,255,160,0.2);
+      border: 1px solid rgba(255,160,160,0.2);
       cursor: pointer;
       backdrop-filter: blur(12px);
       transition: opacity 0.3s;
     " onclick="this.style.opacity='0'; setTimeout(()=>this.remove(),300)">
-      🔓 Osmo Proxy Active — <span style="color:#666">click to dismiss</span>
+      🔓 Moden Proxy Active — <span style="color:#666">click to dismiss</span>
     </div>
   `;
   $('body').append(banner);
 
-  return $.html();
+  let finalHtml = $.html();
+  
+  // Rewrite URLs pointing to proxied domains to go through our proxy
+  PROXIED_DOMAINS.forEach(domain => {
+    const regex = new RegExp(`https?://${domain.replace(/\./g, '\\.')}`, 'g');
+    finalHtml = finalHtml.replace(regex, `/__ext__/${domain}`);
+  });
+
+  return finalHtml;
 }
 
 // ─── Handle external domain proxy ────────────────────────────────────────────
@@ -289,7 +354,8 @@ async function proxyExternal(req, res, domain, extPath) {
   const startTime = Date.now();
 
   try {
-    const response = await fetch(targetUrl, {
+    const fetchOptions = {
+      method: req.method,
       headers: {
         'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Accept': req.headers['accept'] || '*/*',
@@ -297,7 +363,23 @@ async function proxyExternal(req, res, domain, extPath) {
         'Origin': TARGET_ORIGIN,
       },
       redirect: 'follow',
-    });
+    };
+
+    // Pass Content-Type if present
+    if (req.headers['content-type']) {
+      fetchOptions.headers['Content-Type'] = req.headers['content-type'];
+    }
+
+    // Read and pass request body for POST/PUT/PATCH
+    if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+      const buffers = [];
+      for await (const chunk of req) {
+        buffers.push(chunk);
+      }
+      fetchOptions.body = Buffer.concat(buffers);
+    }
+
+    const response = await fetch(targetUrl, fetchOptions);
 
     const contentType = response.headers.get('content-type') || 'application/octet-stream';
     const duration = Date.now() - startTime;
@@ -363,7 +445,7 @@ function serveDashboard(res) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Osmo Proxy — Dashboard</title>
+  <title>Moden Proxy — Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
@@ -377,9 +459,9 @@ function serveDashboard(res) {
       --text-primary: #e8e8f0;
       --text-secondary: #8888a0;
       --text-muted: #555570;
-      --accent: #6cf060;
-      --accent-glow: rgba(108, 240, 96, 0.15);
-      --accent-alt: #40d8f0;
+      --accent: #f060a0; /* Changed accent color to pinkish */
+      --accent-glow: rgba(240, 96, 160, 0.15);
+      --accent-alt: #f0a040;
       --danger: #f06060;
       --radius: 14px;
     }
@@ -404,8 +486,8 @@ function serveDashboard(res) {
       left: -50%;
       width: 200%;
       height: 200%;
-      background: radial-gradient(ellipse at 30% 20%, rgba(108,240,96,0.03) 0%, transparent 50%),
-                  radial-gradient(ellipse at 70% 80%, rgba(64,216,240,0.02) 0%, transparent 50%);
+      background: radial-gradient(ellipse at 30% 20%, rgba(240,96,160,0.03) 0%, transparent 50%),
+                  radial-gradient(ellipse at 70% 80%, rgba(240,160,64,0.02) 0%, transparent 50%);
       pointer-events: none;
       z-index: 0;
     }
@@ -476,7 +558,7 @@ function serveDashboard(res) {
     }
 
     input[type="text"]:focus {
-      border-color: rgba(108,240,96,0.3);
+      border-color: rgba(240,96,160,0.3);
       box-shadow: 0 0 0 3px var(--accent-glow);
     }
 
@@ -497,14 +579,14 @@ function serveDashboard(res) {
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent) 0%, #50e050 100%);
+      background: linear-gradient(135deg, var(--accent) 0%, #e05090 100%);
       color: #0a0a0f;
-      box-shadow: 0 4px 16px rgba(108,240,96,0.2);
+      box-shadow: 0 4px 16px rgba(240,96,160,0.2);
     }
 
     .btn-primary:hover {
       transform: translateY(-1px);
-      box-shadow: 0 6px 24px rgba(108,240,96,0.3);
+      box-shadow: 0 6px 24px rgba(240,96,160,0.3);
     }
 
     .btn-primary:active {
@@ -547,8 +629,8 @@ function serveDashboard(res) {
     }
 
     .link-card:hover {
-      border-color: rgba(108,240,96,0.2);
-      background: rgba(108,240,96,0.04);
+      border-color: rgba(240,96,160,0.2);
+      background: rgba(240,96,160,0.04);
       transform: translateY(-1px);
     }
 
@@ -558,7 +640,7 @@ function serveDashboard(res) {
       display: flex;
       align-items: center;
       justify-content: center;
-      background: rgba(108,240,96,0.08);
+      background: rgba(240,96,160,0.08);
       border-radius: 8px;
       font-size: 16px;
       flex-shrink: 0;
@@ -611,8 +693,8 @@ function serveDashboard(res) {
     .info-bar {
       margin-top: 40px;
       padding: 16px 20px;
-      background: rgba(108,240,96,0.04);
-      border: 1px solid rgba(108,240,96,0.1);
+      background: rgba(240,96,160,0.04);
+      border: 1px solid rgba(240,96,160,0.1);
       border-radius: 12px;
       font-size: 12px;
       color: var(--text-secondary);
@@ -689,7 +771,7 @@ function serveDashboard(res) {
       backdrop-filter: blur(8px);
       transition: all 0.2s;
     }
-    .cache-item:hover { border-color: rgba(108,240,96,0.15); }
+    .cache-item:hover { border-color: rgba(240,96,160,0.15); }
     .cache-item-info {
       display: flex;
       flex-direction: column;
@@ -729,8 +811,8 @@ function serveDashboard(res) {
       margin-left: 6px;
       display: inline-block;
     }
-    .log-cache-hit { background: rgba(108,240,96,0.12); color: var(--accent); }
-    .log-cache-miss { background: rgba(64,216,240,0.12); color: var(--accent-alt); }
+    .log-cache-hit { background: rgba(240,96,160,0.12); color: var(--accent); }
+    .log-cache-miss { background: rgba(240,160,64,0.12); color: var(--accent-alt); }
 
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(8px); }
@@ -753,8 +835,8 @@ function serveDashboard(res) {
 <body>
   <div class="container">
     <div class="logo-area">
-      <h1>🔓 Osmo Proxy</h1>
-      <p>Browse osmo.supply without access restrictions</p>
+      <h1>🔓 Moden Proxy</h1>
+      <p>Browse moden.club without access restrictions</p>
     </div>
 
     <div class="input-group">
@@ -981,6 +1063,17 @@ const server = http.createServer(async (req, res) => {
     return serveDashboard(res);
   }
 
+  // Block Cloudflare Analytics / RUM tracking to prevent 405 Method Not Allowed errors
+  if (reqPath.startsWith('/cdn-cgi/rum')) {
+    const duration = Date.now() - startTime;
+    addLog(req.method, reqPath + ' [BLOCKED]', 200, duration);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    return res.end('{"status": "ok"}');
+  }
+
   // Log API
   if (reqPath === '/__proxy__/logs') {
     res.writeHead(200, {
@@ -1021,8 +1114,13 @@ const server = http.createServer(async (req, res) => {
     return proxyExternal(req, res, domain, extPath);
   }
 
-  // ─── Main osmo.supply proxy ────────────────────────────────────────────
-  const targetUrl = TARGET_ORIGIN + reqPath;
+  // ─── Main proxy ────────────────────────────────────────────
+  let proxyReqPath = reqPath;
+  // Bypass Moden's Webflow/Supabase edge router by adding a double slash
+  if (proxyReqPath.startsWith('/resource/') || proxyReqPath.startsWith('/tools/')) {
+    proxyReqPath = '/' + proxyReqPath;
+  }
+  const targetUrl = TARGET_ORIGIN + proxyReqPath;
 
   // Check cache BEFORE any network request to Osmo (zero footprint)
   const forceRefresh = reqUrl.searchParams.has('_refresh');

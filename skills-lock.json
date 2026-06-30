@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "protocol-reverse-engineering": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "github",
+      "skillPath": "skills/protocol-reverse-engineering/SKILL.md",
+      "computedHash": "ef29017c49fa11a919b76c6c720bc5369d1616f55d4a6a7a6842b9b4054359c3"
+    }
+  }
+}

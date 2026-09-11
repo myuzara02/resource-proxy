@@ -45,6 +45,8 @@ let PROXIED_DOMAINS_OSMO = [
   'cdn.prod.website-files.com',
   'osmo.b-cdn.net',
   'slater.app',
+  'annnimate.com',
+  'annnimate.b-cdn.net',
 ];
 
 // ─── MODEN CONFIG ───────────────────────────────────────────────────────────
@@ -61,12 +63,22 @@ let PROXIED_DOMAINS_MODEN = [
   'asset-editor.moden.workers.dev',
   'layout-wizard.moden.workers.dev',
   'css-animator.moden.workers.dev',
+  'annnimate.com',
+  'annnimate.b-cdn.net',
+];
+
+// ─── ANNNIMATE CONFIG ───────────────────────────────────────────────────────
+const TARGET_ANNNIMATE = 'https://annnimate.com';
+const CACHE_DIR_ANNNIMATE = path.join(__dirname, '.cache_annnimate');
+let PROXIED_DOMAINS_ANNNIMATE = [
+  'annnimate.b-cdn.net',
 ];
 
 // ─── DOMAIN DISCOVERY & HEADERS FORWARDING ──────────────────────────────────
 const reportedDomains = {
   osmo: new Set(),
-  moden: new Set()
+  moden: new Set(),
+  annnimate: new Set()
 };
 
 function getForwardHeaders(reqHeaders, targetOrigin) {
@@ -98,6 +110,7 @@ function ensureCacheDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 ensureCacheDir(CACHE_DIR_OSMO);
+ensureCacheDir(CACHE_DIR_ANNNIMATE);
 ensureCacheDir(CACHE_DIR_MODEN);
 
 function getCacheKey(urlPath) {
@@ -554,16 +567,228 @@ function stripProtectionModen(html) {
   return inject.html();
 }
 
+// ─── STRIPPING LOGIC (ANNNIMATE) ────────────────────────────────────────────
+function stripProtectionAnnnimate(html) {
+  // Annnimate is Next.js RSC. MUST NOT rewrite URLs in HTML — the inline RSC
+  // flight data contains serialized JSON with URLs; blanket regex replacement
+  // corrupts it and causes hydration errors. The full reverse proxy already
+  // handles all requests, so no URL rewriting is needed in the HTML.
+
+  // 1. Fetch interceptor for CORS domains
+  const fetchInterceptor = `
+<script>
+(function() {
+  var proxyDomains = ${JSON.stringify(PROXIED_DOMAINS_ANNNIMATE)};
+  var _origFetch = window.fetch;
+  window.fetch = function(input, init) {
+    var url;
+    if (typeof input === 'string') url = input;
+    else if (input instanceof URL) url = input.href;
+    else if (input && typeof input === 'object' && input.url) url = input.url;
+    else url = String(input);
+    for (var i = 0; i < proxyDomains.length; i++) {
+      var pat = 'https://' + proxyDomains[i];
+      if (url.indexOf(pat) === 0) {
+        url = '/__ext__/' + proxyDomains[i] + url.slice(pat.length);
+        if (input instanceof Request) return _origFetch.call(this, new Request(url, input), init);
+        return _origFetch.call(this, url, init);
+      }
+    }
+    if (url.match(/^https?:\\/\\//)) {
+      var m = url.match(/^https?:\\/\\/([^\\/]+)/);
+      if (m && m[1] !== window.location.host) {
+        _origFetch.call(window, '/__proxy__/domains/report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: m[1] })
+        }).catch(function() {});
+      }
+    }
+    return _origFetch.call(this, input, init);
+  };
+  var _origOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : String(url);
+      for (var i = 0; i < proxyDomains.length; i++) {
+        var pat = 'https://' + proxyDomains[i];
+        if (urlStr.indexOf(pat) === 0) {
+          url = '/__ext__/' + proxyDomains[i] + urlStr.slice(pat.length);
+          break;
+        }
+      }
+    }
+    return _origOpen.apply(this, [method, url].concat(Array.prototype.slice.call(arguments, 2)));
+  };
+})();
+</script>`;
+
+  // 2. Unlock script: replaces lock overlays with extracted source code
+  const unlockScript = `<script>
+(function() {
+  var slug = window.location.pathname.match(/^\\/animations\\/([\\w-]+)/);
+  if (!slug) return;
+  slug = slug[1];
+
+  function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function injectCodeViewer(data) {
+    // --- A. Replace "The full source is locked" box with real code ---
+    var lockBoxes = document.querySelectorAll('.flex.h-80.items-center.justify-center');
+    lockBoxes.forEach(function(lockInner) {
+      var lockBox = lockInner.closest('.flex.flex-col.overflow-hidden.border');
+      if (!lockBox) return;
+      lockBox.style.height = 'auto';
+      lockBox.style.maxHeight = '600px';
+      lockBox.style.overflow = 'auto';
+      lockBox.innerHTML = '<div style="display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1">'
+        + '<button onclick="showTab(this,\\'html\\')" class="anm-tab active" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(96,208,240,0.3);background:rgba(96,208,240,0.15);color:#60d0f0;cursor:pointer;font-size:12px;font-family:monospace">HTML</button>'
+        + '<button onclick="showTab(this,\\'css\\')" class="anm-tab" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#999;cursor:pointer;font-size:12px;font-family:monospace">CSS</button>'
+        + '<button onclick="showTab(this,\\'js\\')" class="anm-tab" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#999;cursor:pointer;font-size:12px;font-family:monospace">JS</button>'
+        + '<button onclick="copyCode()" style="margin-left:auto;padding:4px 12px;border-radius:6px;border:1px solid rgba(96,240,144,0.3);background:rgba(96,240,144,0.1);color:#60f090;cursor:pointer;font-size:12px;font-family:monospace">📋 Copy</button>'
+        + '</div>'
+        + '<pre id="anm-code-pre" style="padding:12px 16px;margin:0;font-size:12px;line-height:1.6;font-family:JetBrains Mono,SF Mono,monospace;white-space:pre-wrap;word-break:break-all;color:#d4d4d4;background:#0a0a0f"><code id="anm-code">' + esc(data.html) + '</code></pre>';
+    });
+
+    window._anmData = data;
+    window.showTab = function(btn, tab) {
+      var code = document.getElementById('anm-code');
+      if (!code) return;
+      var d = window._anmData;
+      if (tab === 'html') code.textContent = d.html;
+      else if (tab === 'css') code.textContent = d.css;
+      else if (tab === 'js') code.textContent = d.js;
+      document.querySelectorAll('.anm-tab').forEach(function(b) {
+        b.style.background = 'transparent';
+        b.style.borderColor = 'rgba(255,255,255,0.1)';
+        b.style.color = '#999';
+      });
+      btn.style.background = 'rgba(96,208,240,0.15)';
+      btn.style.borderColor = 'rgba(96,208,240,0.3)';
+      btn.style.color = '#60d0f0';
+    };
+    window.copyCode = function() {
+      var code = document.getElementById('anm-code');
+      if (!code) return;
+      navigator.clipboard.writeText(code.textContent).then(function() {
+        var btn = document.querySelector('[onclick="copyCode()"]');
+        if (btn) { btn.textContent = '✅ Copied!'; setTimeout(function() { btn.textContent = '📋 Copy'; }, 2000); }
+      });
+    };
+
+    // --- B. Remove "Members customize everything" overlay ---
+    document.querySelectorAll('.absolute.inset-0.flex.flex-col').forEach(function(el) {
+      if (el.textContent.indexOf('Members customize') !== -1) el.remove();
+    });
+
+    // --- C. Remove "Get access" / paywall sections ---
+    document.querySelectorAll('section.border-t').forEach(function(el) {
+      if (el.textContent.indexOf('full code are part of access') !== -1) el.remove();
+    });
+
+    // --- D. Remove ALL "locked" / "free pack" sections in sidebar and main ---
+    document.querySelectorAll('p, div, span').forEach(function(el) {
+      var t = el.textContent || '';
+      if (t.indexOf('is locked') !== -1 && t.length < 200) {
+        // Walk up to find a removable container
+        var parent = el.closest('.flex.flex-col.items-center.gap-10') 
+                  || el.closest('[class*="border-t"][class*="pt-20"]')
+                  || el.closest('.flex.w-full.max-w-\\[26rem\\]');
+        if (parent) parent.remove();
+        else el.remove();
+      }
+    });
+
+    // Remove "Unlock everything" CTA links
+    document.querySelectorAll('a[href*="/checkout"]').forEach(function(el) {
+      if (el.textContent.indexOf('Unlock') !== -1) {
+        var cta = el.closest('.flex.flex-col') || el.parentElement;
+        if (cta && cta.children.length <= 3) cta.remove();
+      }
+    });
+
+    // --- E. Enable disabled customize sliders ---
+    document.querySelectorAll('input[disabled], select[disabled], button[disabled]').forEach(function(el) {
+      el.disabled = false;
+      el.style.opacity = '1';
+      el.style.pointerEvents = 'auto';
+    });
+
+    // --- F. Auto-dismiss "Free starter pack" popup ---
+    setTimeout(function() {
+      document.querySelectorAll('dialog, [role="dialog"]').forEach(function(d) { 
+        if (d.textContent.indexOf('Starter Pack') !== -1 || d.textContent.indexOf('free pack') !== -1) d.remove(); 
+      });
+      // Also try escape key approach
+      document.querySelectorAll('button[aria-label="Close"], button[class*="absolute"]').forEach(function(b) {
+        if (b.closest('[class*="fixed"]') || b.closest('[class*="modal"]')) b.click();
+      });
+    }, 2000);
+  }
+
+  // Fetch source and inject — retry until DOM is ready
+  function tryInject() {
+    var lockBox = document.querySelector('.flex.h-80.items-center.justify-center');
+    if (!lockBox) {
+      if (document.readyState === 'complete') return; // no lock on this page (free component)
+      setTimeout(tryInject, 500);
+      return;
+    }
+    fetch('/__proxy__/annnimate/source?component=' + slug)
+      .then(function(r) { return r.json(); })
+      .then(injectCodeViewer)
+      .catch(function(e) { console.error('Proxy source extraction failed:', e); });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() { setTimeout(tryInject, 1000); });
+  } else {
+    setTimeout(tryInject, 1000);
+  }
+})();
+</script>`;
+
+  // 3. Proxy banner
+  const bannerScript = `<script>
+(function() {
+  var animMatch = window.location.pathname.match(/^\\/animations\\/([\\w-]+)$/);
+  var kitMatch = window.location.pathname.match(/^\\/kits\\/([\\w-]+)$/);
+  var slug = animMatch ? animMatch[1] : null;
+  var kit = kitMatch ? kitMatch[1] : null;
+  var el = document.createElement('div');
+  el.id = 'proxy-banner';
+  el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:999999;background:linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 100%);color:#60d0f0;padding:10px 18px;border-radius:10px;font-family:SF Mono,monospace;font-size:12px;box-shadow:0 4px 24px rgba(0,0,0,0.5);border:1px solid rgba(96,208,240,0.2);backdrop-filter:blur(12px);display:flex;gap:12px;align-items:center;flex-wrap:wrap;max-width:600px;';
+  var items = '<span style="cursor:pointer" onclick="window.location.href=\\'/__dashboard\\'">🔓 Proxy Active — <span style=\\'color:#fff;text-decoration:underline\\'>Switch</span></span>';
+  if (slug) {
+    items += '<span style="color:rgba(255,255,255,0.2)">|</span>';
+    items += '<a href="/__proxy__/annnimate/source?component=' + slug + '" target="_blank" style="color:#60f090;text-decoration:none;cursor:pointer">📦 JSON</a>';
+    items += '<a href="/__proxy__/annnimate/source?component=' + slug + '&format=raw" target="_blank" style="color:#f0a060;text-decoration:none;cursor:pointer">🔧 HTML</a>';
+  }
+  if (kit) {
+    items += '<span style="color:rgba(255,255,255,0.2)">|</span>';
+    items += '<a href="/__proxy__/annnimate/kit?kit=' + kit + '" target="_blank" style="color:#60f090;text-decoration:none;cursor:pointer">📦 Kit Components</a>';
+    items += '<span style="color:rgba(255,255,255,0.15);font-size:10px"> (click any → &format=raw for HTML)</span>';
+  }
+  el.innerHTML = items;
+  document.body.appendChild(el);
+})();
+</script>`;
+
+  html = html.replace('</head>', fetchInterceptor + '</head>');
+  html = html.replace('</body>', unlockScript + bannerScript + '</body>');
+  return html;
+}
+
 // ─── EXTERNAL / ASSET PROXY LOGIC ───────────────────────────────────────────
 async function proxyExternal(req, res, domain, extPath, targetOrigin) {
-  const targetUrl = "https://" + domain + extPath;
+  const targetUrl = 'https://' + domain + extPath;
   const startTime = Date.now();
   try {
     const fetchOptions = {
       method: req.method,
       headers: getForwardHeaders(req.headers, targetOrigin),
       redirect: 'follow',
-      timeout: 8000,
+      timeout: 15000,
     };
     
     let reqBodyStr = '';
@@ -575,12 +800,32 @@ async function proxyExternal(req, res, domain, extPath, targetOrigin) {
     }
     const response = await fetch(targetUrl, fetchOptions);
     const contentType = response.headers.get('content-type') || 'application/octet-stream';
-    const buffer = await response.buffer();
+    let buffer = await response.buffer();
     const duration = Date.now() - startTime;
 
     let resBodyStr = '';
     if (contentType.includes('json') || contentType.includes('text') || contentType.includes('javascript') || contentType.includes('html')) {
       resBodyStr = buffer.toString('utf-8');
+
+      // For annnimate.com HTML responses: rewrite all relative URLs so browser
+      // fetches assets through this proxy instead of hitting localhost directly.
+      if ((domain === 'annnimate.com' || domain === 'annnimate.b-cdn.net') && contentType.includes('html')) {
+        const proxyBase = '/__ext__/' + domain;
+        resBodyStr = resBodyStr
+          // src="/_next/..." -> src="/__ext__/annnimate.com/_next/..."
+          .replace(/src="\/((?!\/))/g, 'src="' + proxyBase + '/')
+          // href="/_next/..." -> href="/__ext__/annnimate.com/_next/..."
+          .replace(/href="\/((?!\/))/g, 'href="' + proxyBase + '/')
+          // action="/..."
+          .replace(/action="\/((?!\/))/g, 'action="' + proxyBase + '/')
+          // Next.js inline JSON: "/_next/ -> "/__ext__/annnimate.com/_next/
+          .replace(/"\/_next\//g, '"' + proxyBase + '/_next/')
+          // Next.js inline JSON: "https://annnimate.com/ -> "/__ext__/annnimate.com/
+          .replace(/https:\/\/annnimate\.com\//g, proxyBase + '/')
+          // Next.js route prefetch: "\/api\/ -> proxy
+          .replace(/"\/(api|animations|_next)\//g, '"' + proxyBase + '/$1/');
+        buffer = Buffer.from(resBodyStr, 'utf-8');
+      }
     } else {
       resBodyStr = `[Binary Data: ${buffer.length} bytes]`;
     }
@@ -589,7 +834,7 @@ async function proxyExternal(req, res, domain, extPath, targetOrigin) {
       reqHeaders: req.headers,
       resHeaders: Object.fromEntries(response.headers.entries()),
       reqBody: reqBodyStr,
-      resBody: resBodyStr
+      resBody: resBodyStr.slice(0, 2000)
     });
 
     res.writeHead(response.status, {
@@ -609,7 +854,7 @@ async function proxyExternal(req, res, domain, extPath, targetOrigin) {
       resBody: err.message
     });
     res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end("External proxy error: " + err.message);
+    res.end('External proxy error: ' + err.message);
   }
 }
 
@@ -664,8 +909,9 @@ function serveDashboard(req, res) {
 
   const isOsmo = targetSite === 'osmo';
   const isModen = targetSite === 'moden';
-  const siteName = isOsmo ? 'Osmo' : (isModen ? 'Moden' : '');
-  const activeClass = isOsmo ? 'osmo' : 'moden';
+  const isAnnnimate = targetSite === 'annnimate';
+  const siteName = isOsmo ? 'Osmo' : (isModen ? 'Moden' : (isAnnnimate ? 'Annnimate' : ''));
+  const activeClass = isOsmo ? 'osmo' : (isModen ? 'moden' : (isAnnnimate ? 'annnimate' : ''));
   const cacheTTLHours = Math.round(CACHE_TTL / 3600000);
 
   const html = `<!DOCTYPE html>
@@ -687,8 +933,8 @@ function serveDashboard(req, res) {
       --text-primary: #e8e8f0;
       --text-secondary: #8888a0;
       --text-muted: #555570;
-      --accent: ${isOsmo ? '#6cf060' : '#f060a0'};
-      --accent-glow: ${isOsmo ? 'rgba(108, 240, 96, 0.15)' : 'rgba(240, 96, 160, 0.15)'};
+      --accent: ${isOsmo ? '#6cf060' : isAnnnimate ? '#60d0f0' : '#f060a0'};
+      --accent-glow: ${isOsmo ? 'rgba(108, 240, 96, 0.15)' : isAnnnimate ? 'rgba(96, 208, 240, 0.15)' : 'rgba(240, 96, 160, 0.15)'};
       --accent-alt: #40d8f0;
       --danger: #f06060;
       --radius: 12px;
@@ -825,6 +1071,12 @@ function serveDashboard(req, res) {
       box-shadow: 0 8px 32px rgba(240,96,160,0.06);
     }
     .card.moden h3 { color: #f060a0; font-size: 24px; margin-bottom: 6px; }
+
+    .card.annnimate {
+      border-color: rgba(96,208,240,0.25);
+      box-shadow: 0 8px 32px rgba(96,208,240,0.06);
+    }
+    .card.annnimate h3 { color: #60d0f0; font-size: 24px; margin-bottom: 6px; }
 
     .card span {
       color: var(--text-muted);
@@ -1257,6 +1509,10 @@ function serveDashboard(req, res) {
             <h3>Moden</h3>
             <span>moden.club</span>
           </a>
+          <a href="/?switch=annnimate" class="card annnimate">
+            <h3>Annnimate</h3>
+            <span>annnimate.com</span>
+          </a>
         </div>
       </div>
     ` : `
@@ -1266,7 +1522,7 @@ function serveDashboard(req, res) {
         <div class="left-panel">
           <div class="browser-bar">
             <span class="prefix">http://localhost:4000/</span>
-            <input type="text" id="pathInput" placeholder="${isOsmo ? 'vault' : 'library'}" autofocus>
+            <input type="text" id="pathInput" placeholder="${isOsmo ? 'vault' : isAnnnimate ? 'animations' : 'library'}" autofocus>
             <button class="btn btn-primary" onclick="goToPath()">Browse →</button>
           </div>
 
@@ -1633,9 +1889,33 @@ const server = http.createServer(async (req, res) => {
       });
       return res.end();
     }
+    if (target === 'annnimate') {
+      res.writeHead(302, {
+        'Set-Cookie': 'proxy_target=annnimate; Path=/; Max-Age=31536000',
+        'Location': '/animations'
+      });
+      return res.end();
+    }
   }
 
-  // 2. Read Cookie Context
+  // 2. Handle External Proxied Domains FIRST (before cookie check so __ext__ always works)
+  if (pathname.startsWith('/__ext__/')) {
+    const extParts = pathname.replace('/__ext__/', '').split('/');
+    const extDomain = extParts[0];
+    const extPath = '/' + extParts.slice(1).join('/') + (urlParts[1] ? '?' + urlParts[1] : '');
+    // Determine target origin based on the domain being requested
+    let extTargetOrigin;
+    if (extDomain === 'annnimate.com' || extDomain === 'annnimate.b-cdn.net') {
+      extTargetOrigin = TARGET_ANNNIMATE;
+    } else if (PROXIED_DOMAINS_MODEN.includes(extDomain)) {
+      extTargetOrigin = TARGET_MODEN;
+    } else {
+      extTargetOrigin = TARGET_OSMO;
+    }
+    return proxyExternal(req, res, extDomain, extPath, extTargetOrigin);
+  }
+
+  // 3. Read Cookie Context
   let targetSite = null;
   const cookieHeader = req.headers.cookie;
   if (cookieHeader) {
@@ -1652,9 +1932,11 @@ const server = http.createServer(async (req, res) => {
 
   // 3. Setup Context Variables
   const isOsmo = targetSite === 'osmo';
-  const TARGET_ORIGIN = isOsmo ? TARGET_OSMO : TARGET_MODEN;
-  const CACHE_DIR = isOsmo ? CACHE_DIR_OSMO : CACHE_DIR_MODEN;
-  const stripFn = isOsmo ? stripProtectionOsmo : stripProtectionModen;
+  const isModen = targetSite === 'moden';
+  const isAnnnimate = targetSite === 'annnimate';
+  const TARGET_ORIGIN = isOsmo ? TARGET_OSMO : isModen ? TARGET_MODEN : isAnnnimate ? TARGET_ANNNIMATE : TARGET_OSMO;
+  const CACHE_DIR = isOsmo ? CACHE_DIR_OSMO : isModen ? CACHE_DIR_MODEN : isAnnnimate ? CACHE_DIR_ANNNIMATE : CACHE_DIR_OSMO;
+  const stripFn = isOsmo ? stripProtectionOsmo : isModen ? stripProtectionModen : isAnnnimate ? stripProtectionAnnnimate : stripProtectionOsmo;
 
   // 4. Handle API Endpoints for Dashboard
   if (pathname === '/__proxy__/logs') {
@@ -1691,8 +1973,8 @@ const server = http.createServer(async (req, res) => {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
     });
-    const proxiedList = isOsmo ? PROXIED_DOMAINS_OSMO : PROXIED_DOMAINS_MODEN;
-    const reportedList = Array.from(reportedDomains[targetSite]);
+    const proxiedList = isOsmo ? PROXIED_DOMAINS_OSMO : isModen ? PROXIED_DOMAINS_MODEN : isAnnnimate ? PROXIED_DOMAINS_ANNNIMATE : PROXIED_DOMAINS_OSMO;
+    const reportedList = Array.from(reportedDomains[targetSite] || []);
     return res.end(JSON.stringify({ proxied: proxiedList, reported: reportedList }));
   }
 
@@ -1706,6 +1988,8 @@ const server = http.createServer(async (req, res) => {
         if (domainToAdd && typeof domainToAdd === 'string') {
           if (isOsmo) {
             if (!PROXIED_DOMAINS_OSMO.includes(domainToAdd)) PROXIED_DOMAINS_OSMO.push(domainToAdd);
+          } else if (isAnnnimate) {
+            if (!PROXIED_DOMAINS_ANNNIMATE.includes(domainToAdd)) PROXIED_DOMAINS_ANNNIMATE.push(domainToAdd);
           } else {
             if (!PROXIED_DOMAINS_MODEN.includes(domainToAdd)) PROXIED_DOMAINS_MODEN.push(domainToAdd);
           }
@@ -1727,6 +2011,8 @@ const server = http.createServer(async (req, res) => {
         if (domainToRemove && typeof domainToRemove === 'string') {
           if (isOsmo) {
             PROXIED_DOMAINS_OSMO = PROXIED_DOMAINS_OSMO.filter(d => d !== domainToRemove);
+          } else if (isAnnnimate) {
+            PROXIED_DOMAINS_ANNNIMATE = PROXIED_DOMAINS_ANNNIMATE.filter(d => d !== domainToRemove);
           } else {
             PROXIED_DOMAINS_MODEN = PROXIED_DOMAINS_MODEN.filter(d => d !== domainToRemove);
           }
@@ -1745,7 +2031,7 @@ const server = http.createServer(async (req, res) => {
         const body = JSON.parse(Buffer.concat(buffers).toString('utf-8'));
         const domainToReport = body.domain;
         if (domainToReport && typeof domainToReport === 'string') {
-          const proxiedList = isOsmo ? PROXIED_DOMAINS_OSMO : PROXIED_DOMAINS_MODEN;
+          const proxiedList = isOsmo ? PROXIED_DOMAINS_OSMO : isAnnnimate ? PROXIED_DOMAINS_ANNNIMATE : PROXIED_DOMAINS_MODEN;
           if (!proxiedList.includes(domainToReport)) {
             reportedDomains[targetSite].add(domainToReport);
           }
@@ -1756,12 +2042,285 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ success: true }));
   }
 
-  // 5. Handle External Proxied Domains (e.g. Outseta APIs)
-  if (pathname.startsWith('/__ext__/')) {
-    const parts = pathname.replace('/__ext__/', '').split('/');
-    const domain = parts[0];
-    const extPath = '/' + parts.slice(1).join('/') + (urlParts[1] ? '?' + urlParts[1] : '');
-    return proxyExternal(req, res, domain, extPath, TARGET_ORIGIN);
+  // 5. Handle External Proxied Domains — handled earlier (before cookie check), skip here
+
+  // 5.24. Annnimate: Kit source code extraction
+  // GET /__proxy__/annnimate/kit?kit=reveal — list all components
+  // GET /__proxy__/annnimate/kit?kit=reveal&component=logo-draw-split — extract source
+  // GET /__proxy__/annnimate/kit?kit=reveal&component=logo-draw-split&format=raw — self-contained HTML
+  if (isAnnnimate && pathname === '/__proxy__/annnimate/kit') {
+    const kit = query.get('kit');
+    const component = query.get('component');
+    if (!kit) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ kits: ['reveal', 'menu'] }));
+    }
+
+    // Kit component listing
+    const KIT_COMPONENTS = {
+      reveal: ['logo-draw-split','counter-columns','mosaic-dissolve','logo-fill-cover','image-cycle-zoom','image-trail-loader','grid-flash-cover','composing-grid','hero-marquee','flow-field','fractal-glass-hero','tile-orb','depth-parallax-hero'],
+      menu: []
+    };
+    if (!component) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ kit, components: KIT_COMPONENTS[kit] || [] }));
+    }
+
+    const startTime = Date.now();
+    try {
+      const sandboxUrl = TARGET_ANNNIMATE + '/api/sandbox/kit/' + encodeURIComponent(kit) + '/' + encodeURIComponent(component);
+      const resp = await fetch(sandboxUrl, {
+        headers: getForwardHeaders(req.headers, TARGET_ANNNIMATE),
+        timeout: 15000,
+      });
+      if (resp.status !== 200) {
+        res.writeHead(resp.status, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Kit sandbox returned ' + resp.status }));
+      }
+      const html = await resp.text();
+
+      const format = query.get('format');
+      if (format === 'raw') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+
+      // Extract parts
+      const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+      const css = styleMatch ? styleMatch[1].trim() : '';
+      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      let componentHtml = bodyMatch ? bodyMatch[1] : '';
+      componentHtml = componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim();
+
+      const scripts = [];
+      const scriptRegex = /<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/g;
+      let m;
+      while ((m = scriptRegex.exec(html)) !== null) {
+        if (m[1].trim().length > 100) scripts.push(m[1].trim());
+      }
+      scripts.sort((a, b) => b.length - a.length);
+      const bootScript = scripts[1] || '';
+      const innerMatch = bootScript.match(/const\s+ready\s*=\s*\(\)\s*=>\s*\{\s*try\s*\{\s*\n([\s\S]+?)\n\s*\}\s*catch/);
+      const componentJs = innerMatch ? innerMatch[1].trim() : (bootScript || '');
+      const depsMatch = (scripts[1] || '').match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
+      const deps = depsMatch ? depsMatch[1].replace(/"/g, '').split(',').map(s => s.trim()) : [];
+
+      const duration = Date.now() - startTime;
+      addLog('GET', pathname + '?kit=' + kit + '&component=' + component, 200, duration, {
+        reqHeaders: req.headers, resHeaders: {},
+        reqBody: '', resBody: `Kit extracted: CSS ${css.length}B, HTML ${componentHtml.length}B, JS ${componentJs.length}B`
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      return res.end(JSON.stringify({ kit, component, deps, css, html: componentHtml, js: componentJs }, null, 2));
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  // 5.25. Annnimate: Source code extraction from sandbox iframe
+  // GET /__proxy__/annnimate/source?component=photo-stack-gallery
+  if (isAnnnimate && pathname === '/__proxy__/annnimate/source') {
+    const component = query.get('component');
+    if (!component) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Missing ?component= parameter' }));
+    }
+    const startTime = Date.now();
+    try {
+      const sandboxUrl = TARGET_ANNNIMATE + '/api/sandbox/iframe/' + encodeURIComponent(component);
+      const resp = await fetch(sandboxUrl, {
+        headers: getForwardHeaders(req.headers, TARGET_ANNNIMATE),
+        timeout: 15000,
+      });
+      if (resp.status !== 200) {
+        res.writeHead(resp.status, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Sandbox returned ' + resp.status }));
+      }
+      const html = await resp.text();
+
+      // Extract CSS
+      const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+      const css = styleMatch ? styleMatch[1].trim() : '';
+
+      // Extract component HTML (body minus scripts)
+      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      let componentHtml = bodyMatch ? bodyMatch[1] : '';
+      componentHtml = componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim();
+
+      // Extract all inline scripts, sorted by size
+      const scripts = [];
+      const scriptRegex = /<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/g;
+      let m;
+      while ((m = scriptRegex.exec(html)) !== null) {
+        if (m[1].trim().length > 100) scripts.push(m[1].trim());
+      }
+      scripts.sort((a, b) => b.length - a.length);
+
+      // scripts[1] is the boot loader containing the inline component IIFE
+      const bootScript = scripts[1] || '';
+      // Extract just the component IIFE from inside the boot's inner try block
+      // Pattern: const ready = () => { try { <COMPONENT_CODE> } catch
+      const innerMatch = bootScript.match(/const\s+ready\s*=\s*\(\)\s*=>\s*\{\s*try\s*\{\s*\n([\s\S]+?)\n\s*\}\s*catch/);
+      const componentJs = innerMatch ? innerMatch[1].trim() : (bootScript || '');
+
+      // Extract GSAP plugin dependencies
+      const depsMatch = bootScript.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
+      const deps = depsMatch ? depsMatch[1].replace(/"/g, '').split(',').map(s => s.trim()) : [];
+
+      // Extract data-anm-* attributes
+      const anmAttrs = {};
+      const attrRegex = /data-anm-([a-z-]+)="([^"]*)"/g;
+      let am;
+      while ((am = attrRegex.exec(componentHtml)) !== null) {
+        anmAttrs[am[1]] = am[2];
+      }
+
+      const duration = Date.now() - startTime;
+      addLog('GET', pathname + '?component=' + component, 200, duration, {
+        reqHeaders: req.headers, resHeaders: {},
+        reqBody: '', resBody: `Extracted: CSS ${css.length}B, HTML ${componentHtml.length}B, JS ${componentJs.length}B`
+      });
+
+      const format = query.get('format');
+      if (format === 'raw') {
+        // Serve the original sandbox HTML as-is — it's already self-contained
+        // with dep loading, component init, and styles
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      return res.end(JSON.stringify({
+        component,
+        deps,
+        anmAttributes: anmAttrs,
+        css,
+        html: componentHtml,
+        js: componentJs,
+      }, null, 2));
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  // 5.5. Annnimate: Full Next.js reverse proxy
+  // Unlike Webflow sites, Next.js needs ALL requests proxied (RSC, API, assets, etc.)
+  if (isAnnnimate) {
+    const startTime = Date.now();
+    const targetUrl = TARGET_ORIGIN + req.url;
+    try {
+      const proxyHeaders = getForwardHeaders(req.headers, TARGET_ORIGIN);
+      // Forward RSC-specific headers
+      ['rsc', 'next-router-state-tree', 'next-router-prefetch', 'next-router-segment-prefetch', 'next-url'].forEach(h => {
+        if (req.headers[h]) proxyHeaders[h] = req.headers[h];
+      });
+
+      const fetchOptions = {
+        method: req.method,
+        headers: proxyHeaders,
+        redirect: 'manual',
+        timeout: 15000,
+      };
+
+      if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+        const buffers = [];
+        for await (const chunk of req) buffers.push(chunk);
+        fetchOptions.body = Buffer.concat(buffers);
+      }
+
+      const response = await fetch(targetUrl, fetchOptions);
+      const contentType = response.headers.get('content-type') || 'application/octet-stream';
+
+      // Handle redirects
+      if (response.status >= 300 && response.status < 400) {
+        let location = response.headers.get('location') || '';
+        // Rewrite absolute redirect URLs to relative
+        if (location.startsWith('https://annnimate.com')) {
+          location = location.replace('https://annnimate.com', '');
+        }
+        const duration = Date.now() - startTime;
+        addLog(req.method, req.url, response.status, duration, {
+          reqHeaders: req.headers,
+          resHeaders: Object.fromEntries(response.headers.entries()),
+          reqBody: '', resBody: 'Redirect → ' + location
+        });
+        res.writeHead(response.status, { 'Location': location || '/' });
+        return res.end();
+      }
+
+      let buffer = await response.buffer();
+
+      // Only strip protection on HTML page responses (not RSC flight data, not API, not assets)
+      const isHtmlPage = contentType.includes('text/html') && !req.headers['rsc'];
+      if (isHtmlPage) {
+        // Check cache first
+        if (isCacheValid(pathname, CACHE_DIR)) {
+          const cache = readCache(pathname, CACHE_DIR);
+          if (cache) {
+            const duration = Date.now() - startTime;
+            addLog(req.method, pathname + ' [CACHE]', 200, duration, {
+              reqHeaders: req.headers,
+              resHeaders: { 'Content-Type': 'text/html; charset=utf-8' },
+              reqBody: '', resBody: cache.html
+            });
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            return res.end(cache.html);
+          }
+        }
+
+        let html = buffer.toString('utf-8');
+        html = stripFn(html);
+        if (response.status === 200) writeCache(pathname, html, CACHE_DIR);
+
+        const duration = Date.now() - startTime;
+        addLog(req.method, req.url + ' [FRESH]', response.status, duration, {
+          reqHeaders: req.headers,
+          resHeaders: Object.fromEntries(response.headers.entries()),
+          reqBody: '', resBody: html.slice(0, 2000)
+        });
+
+        res.writeHead(response.status, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+
+      // Don't rewrite RSC flight data or JS — URL rewriting corrupts
+      // serialized RSC payload and breaks client hydration.
+      // The proxy handles all requests transparently.
+
+      const duration = Date.now() - startTime;
+      addLog(req.method, req.url, response.status, duration, {
+        reqHeaders: req.headers,
+        resHeaders: Object.fromEntries(response.headers.entries()),
+        reqBody: '', resBody: contentType.includes('text') || contentType.includes('json') || contentType.includes('javascript') ? buffer.toString('utf-8').slice(0, 2000) : `[Binary ${buffer.length}B]`
+      });
+
+      // Forward response with CORS headers
+      const resHeaders = {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+      };
+      const cacheControl = response.headers.get('cache-control');
+      if (cacheControl) resHeaders['Cache-Control'] = cacheControl;
+      const contentDisposition = response.headers.get('content-disposition');
+      if (contentDisposition) resHeaders['Content-Disposition'] = contentDisposition;
+
+      res.writeHead(response.status, resHeaders);
+      return res.end(buffer);
+    } catch (err) {
+      const duration = Date.now() - startTime;
+      addLog(req.method, req.url, 502, duration, {
+        reqHeaders: req.headers, resHeaders: {},
+        reqBody: '', resBody: err.message
+      });
+      res.writeHead(502, { 'Content-Type': 'text/html' });
+      return res.end('<h1>Proxy Error</h1><p>' + err.message + '</p>');
+    }
   }
 
   // 6. Handle Assets
@@ -1789,7 +2348,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     let proxyReqPath = req.url;
-    if (!isOsmo) {
+    if (isModen) {
       // Bypass Moden's Webflow/Supabase edge router by adding a double slash
       if (pathname.startsWith('/resource/') || pathname.startsWith('/tools/') || pathname.startsWith('/toolkit/')) {
         proxyReqPath = '/' + proxyReqPath;

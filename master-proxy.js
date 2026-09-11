@@ -2099,10 +2099,9 @@ const server = http.createServer(async (req, res) => {
         if (m[1].trim().length > 100) scripts.push(m[1].trim());
       }
       scripts.sort((a, b) => b.length - a.length);
-      const bootScript = scripts[1] || '';
-      const innerMatch = bootScript.match(/const\s+ready\s*=\s*\(\)\s*=>\s*\{\s*try\s*\{\s*\n([\s\S]+?)\n\s*\}\s*catch/);
-      const componentJs = innerMatch ? innerMatch[1].trim() : (bootScript || '');
-      const depsMatch = (scripts[1] || '').match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
+      // Find the boot script — the one containing SCRIPT_DEPS (dep loading + built component code)
+      const componentJs = scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '';
+      const depsMatch = componentJs.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
       const deps = depsMatch ? depsMatch[1].replace(/"/g, '').split(',').map(s => s.trim()) : [];
 
       const duration = Date.now() - startTime;
@@ -2158,15 +2157,11 @@ const server = http.createServer(async (req, res) => {
       }
       scripts.sort((a, b) => b.length - a.length);
 
-      // scripts[1] is the boot loader containing the inline component IIFE
-      const bootScript = scripts[1] || '';
-      // Extract just the component IIFE from inside the boot's inner try block
-      // Pattern: const ready = () => { try { <COMPONENT_CODE> } catch
-      const innerMatch = bootScript.match(/const\s+ready\s*=\s*\(\)\s*=>\s*\{\s*try\s*\{\s*\n([\s\S]+?)\n\s*\}\s*catch/);
-      const componentJs = innerMatch ? innerMatch[1].trim() : (bootScript || '');
+      // Find the boot script — the one containing SCRIPT_DEPS (dep loading + built component code)
+      const componentJs = scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '';
 
       // Extract GSAP plugin dependencies
-      const depsMatch = bootScript.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
+      const depsMatch = componentJs.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
       const deps = depsMatch ? depsMatch[1].replace(/"/g, '').split(',').map(s => s.trim()) : [];
 
       // Extract data-anm-* attributes

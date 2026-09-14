@@ -735,11 +735,11 @@ function stripProtectionAnnnimate(html) {
   var HL_STYLE = 'background:rgba(96,208,240,0.15);color:#60d0f0;border-radius:2px;padding:0 2px';
   var HL_CHANGED = 'background:rgba(96,240,144,0.25);color:#60f090;border-radius:2px;padding:0 2px;transition:background 0.6s';
   function highlightAttrs(escaped, changed) {
-    // Highlight data-anm-*="value" patterns in escaped HTML
-    return escaped.replace(/(data-anm-[a-z-]+)=&quot;([^&]*)&quot;/g, function(m, attr, val) {
+    // Match data-anm-*="value" — esc() doesn't encode quotes, so match raw "
+    return escaped.replace(/(data-anm-[a-z-]+)="([^"]*)"/g, function(m, attr, val) {
       var isChanged = changed && changed[attr];
       var style = isChanged ? HL_CHANGED : HL_STYLE;
-      return '<span style="color:#f0a060">' + attr + '</span>=&quot;<span style="' + style + '">' + val + '</span>&quot;';
+      return '<span style="color:#f0a060">' + attr + '</span>="<span style="' + style + '">' + val + '</span>"';
     });
   }
 

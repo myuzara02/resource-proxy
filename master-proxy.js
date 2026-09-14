@@ -2256,7 +2256,7 @@ const server = http.createServer(async (req, res) => {
 
       // Fetch specific component with all code columns
       const data = await supabaseQuery('animations',
-        'slug=eq.' + encodeURIComponent(component) + '&select=slug,title,category,html_code,css_code,js_code,react_code,vue_code,dependencies,custom_attributes,description');
+        'slug=eq.' + encodeURIComponent(component) + '&select=slug,title,category,description,html_code,css_code,js_code,react_code,vue_code,dependencies,custom_attributes,metadata,attributes,specs,show_controls');
       if (!data.length) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: 'Component not found: ' + component }));
@@ -2299,12 +2299,21 @@ const server = http.createServer(async (req, res) => {
         category: comp.category,
         description: comp.description,
         dependencies: comp.dependencies,
-        attributes: comp.custom_attributes,
+        // Source code
         html: comp.html_code || '',
         css: comp.css_code || '',
         js: comp.js_code || '',
         react: comp.react_code || '',
         vue: comp.vue_code || '',
+        // Customize & docs
+        controls: comp.attributes?.configurables || [],
+        selectors: comp.attributes?.selectors || [],
+        tips: comp.metadata?.tips || [],
+        features: comp.metadata?.features || [],
+        teaching: comp.metadata?.teaching || null,
+        useCases: comp.metadata?.use_cases || [],
+        variations: comp.metadata?.variations || [],
+        specs: comp.specs || {},
       }, null, 2));
     } catch (err) {
       if (!res.headersSent) {

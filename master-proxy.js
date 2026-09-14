@@ -642,14 +642,28 @@ function stripProtectionAnnnimate(html) {
   var COPY_STYLE = 'margin-left:auto;' + TAB_STYLE + 'rgba(96,240,144,0.3);background:rgba(96,240,144,0.1);color:#60f090';
   var PRE_STYLE = 'padding:12px 16px;margin:0;font-size:12px;line-height:1.6;font-family:JetBrains Mono,SF Mono,monospace;white-space:pre;overflow:auto;max-height:500px;color:#d4d4d4;background:#0a0a0f;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;position:relative';
 
+  function buildFullPage(data) {
+    // The JS (boot script) already loads GSAP deps via SCRIPT_DEPS internally,
+    // so we don't need separate <script src> tags. Just combine CSS + HTML + JS.
+    return '<!DOCTYPE html>\\n<html lang="en">\\n<head>\\n<meta charset="UTF-8">\\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\\n<style>\\n'
+      + data.css
+      + '\\n</style>\\n</head>\\n<body>\\n'
+      + data.html
+      + '\\n<script>\\n'
+      + data.js
+      + '\\n<\\/script>\\n</body>\\n</html>';
+  }
+
   function buildCodeViewer(id, data) {
+    data._full = buildFullPage(data);
     var bar = '<div style="display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1">'
-      + '<button onclick="switchTab(\\'' + id + '\\',this,\\'html\\')" class="' + id + '-tab" style="' + TAB_ACTIVE + '">HTML</button>'
+      + '<button onclick="switchTab(\\'' + id + '\\',this,\\'full\\')" class="' + id + '-tab" style="' + TAB_ACTIVE + '">⚡ Full</button>'
+      + '<button onclick="switchTab(\\'' + id + '\\',this,\\'html\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">HTML</button>'
       + '<button onclick="switchTab(\\'' + id + '\\',this,\\'css\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">CSS</button>'
       + '<button onclick="switchTab(\\'' + id + '\\',this,\\'js\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">JS</button>'
       + '<button onclick="copyCodeBlock(\\'' + id + '\\')" style="' + COPY_STYLE + '">📋 Copy</button>'
       + '</div>';
-    var pre = '<pre data-lenis-prevent style="' + PRE_STYLE + '"><code id="' + id + '-code">' + esc(data.html) + '</code></pre>';
+    var pre = '<pre data-lenis-prevent style="' + PRE_STYLE + '"><code id="' + id + '-code">' + esc(data._full) + '</code></pre>';
     return bar + pre;
   }
 
@@ -658,7 +672,10 @@ function stripProtectionAnnnimate(html) {
     var code = document.getElementById(id + '-code');
     var store = window['_anmData_' + id];
     if (!code || !store) return;
-    code.textContent = tab === 'css' ? store.css : tab === 'js' ? store.js : store.html;
+    if (tab === 'full') code.textContent = store._full;
+    else if (tab === 'css') code.textContent = store.css;
+    else if (tab === 'js') code.textContent = store.js;
+    else code.textContent = store.html;
     document.querySelectorAll('.' + id + '-tab').forEach(function(b) { b.style.cssText = TAB_INACTIVE; });
     btn.style.cssText = TAB_ACTIVE;
   };

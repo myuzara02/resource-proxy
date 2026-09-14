@@ -75,6 +75,39 @@ let PROXIED_DOMAINS_ANNNIMATE = [
   'annnimate.b-cdn.net',
 ];
 
+// ─── ANNNIMATE SUPABASE (source code extraction) ────────────────────────────
+const SUPABASE_URL = 'https://awfklrxbaytuhycequvl.supabase.co';
+let SUPABASE_ANON_KEY = null; // fetched lazily from annnimate JS bundle
+
+async function getSupabaseKey() {
+  if (SUPABASE_ANON_KEY) return SUPABASE_ANON_KEY;
+  try {
+    // Fetch homepage to find JS chunk containing the key
+    const r = await fetch(TARGET_ANNNIMATE, { timeout: 10000 });
+    const html = await r.text();
+    const chunks = html.match(/\/_next\/static\/chunks\/[^"'\s]+\.js/g) || [];
+    for (const chunk of chunks.slice(0, 40)) {
+      const jr = await fetch(TARGET_ANNNIMATE + chunk, { timeout: 8000 });
+      const js = await jr.text();
+      const key = js.match(/eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/);
+      if (key) { SUPABASE_ANON_KEY = key[0]; return SUPABASE_ANON_KEY; }
+    }
+  } catch (e) { console.error('  ⚠️ Supabase key fetch failed:', e.message); }
+  return null;
+}
+
+async function supabaseQuery(table, params) {
+  const key = await getSupabaseKey();
+  if (!key) throw new Error('Supabase anon key not available');
+  const url = SUPABASE_URL + '/rest/v1/' + table + '?' + params;
+  const r = await fetch(url, {
+    headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
+    timeout: 10000,
+  });
+  if (r.status !== 200) throw new Error('Supabase returned ' + r.status);
+  return r.json();
+}
+
 // ─── DOMAIN DISCOVERY & HEADERS FORWARDING ──────────────────────────────────
 const reportedDomains = {
   osmo: new Set(),
@@ -694,11 +727,13 @@ function stripProtectionAnnnimate(html) {
 
   function buildCodeViewer(id, data) {
     data._full = buildFullPage(data);
-    var bar = '<div style="display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1">'
+    var bar = '<div style="display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1;flex-wrap:wrap">'
       + '<button onclick="switchTab(\\'' + id + '\\',this,\\'full\\')" class="' + id + '-tab" style="' + TAB_ACTIVE + '">⚡ Full</button>'
       + '<button onclick="switchTab(\\'' + id + '\\',this,\\'html\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">HTML</button>'
       + '<button onclick="switchTab(\\'' + id + '\\',this,\\'css\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">CSS</button>'
       + '<button onclick="switchTab(\\'' + id + '\\',this,\\'js\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">JS</button>'
+      + '<button onclick="switchTab(\\'' + id + '\\',this,\\'react\\')" class="' + id + '-tab" style="' + TAB_STYLE + 'rgba(97,218,251,0.3);background:rgba(97,218,251,0.1);color:#61dafb">⚛ React</button>'
+      + '<button onclick="switchTab(\\'' + id + '\\',this,\\'vue\\')" class="' + id + '-tab" style="' + TAB_STYLE + 'rgba(66,184,131,0.3);background:rgba(66,184,131,0.1);color:#42b883">◆ Vue</button>'
       + '<button onclick="copyCodeBlock(\\'' + id + '\\')" style="' + COPY_STYLE + '">📋 Copy</button>'
       + '</div>';
     var pre = '<pre data-lenis-prevent style="' + PRE_STYLE + '"><code id="' + id + '-code">' + esc(data._full) + '</code></pre>';
@@ -710,10 +745,30 @@ function stripProtectionAnnnimate(html) {
     var code = document.getElementById(id + '-code');
     var store = window['_anmData_' + id];
     if (!code || !store) return;
-    if (tab === 'full') code.textContent = store._full;
-    else if (tab === 'css') code.textContent = store.css;
-    else if (tab === 'js') code.textContent = store.js;
-    else code.textContent = store.html;
+
+    // React/Vue: lazy-load from original endpoint
+    if ((tab === 'react' || tab === 'vue') && !store['_' + tab]) {
+      var slug = store._slug || window.location.pathname.match(/[\\w-]+$/)?.[0];
+      code.textContent = 'Loading ' + tab + ' source...';
+      fetch('/__proxy__/annnimate/original?component=' + slug + '&format=' + tab)
+        .then(function(r) { return r.text(); })
+        .then(function(t) {
+          store['_' + tab] = t;
+          code.textContent = t;
+        })
+        .catch(function(e) { code.textContent = 'Error: ' + e.message; });
+    } else if (tab === 'react' || tab === 'vue') {
+      code.textContent = store['_' + tab];
+    } else if (tab === 'full') {
+      code.textContent = store._full;
+    } else if (tab === 'css') {
+      code.textContent = store.css;
+    } else if (tab === 'js') {
+      code.textContent = store.js;
+    } else {
+      code.textContent = store.html;
+    }
+
     document.querySelectorAll('.' + id + '-tab').forEach(function(b) { b.style.cssText = TAB_INACTIVE; });
     btn.style.cssText = TAB_ACTIVE;
   };
@@ -753,8 +808,9 @@ function stripProtectionAnnnimate(html) {
 
     if (slug) {
       h += ' <span style="color:rgba(255,255,255,0.15)">|</span> ';
-      h += '<a href="/__proxy__/annnimate/source?component=' + slug + '" target="_blank" style="color:#60f090;text-decoration:none">📦 JSON</a> ';
-      h += '<a href="/__proxy__/annnimate/source?component=' + slug + '&format=raw" target="_blank" style="color:#f0a060;text-decoration:none">🔧 HTML</a>';
+      h += '<a href="/__proxy__/annnimate/original?component=' + slug + '" target="_blank" style="color:#60f090;text-decoration:none">📦 Original</a> ';
+      h += '<a href="/__proxy__/annnimate/original?component=' + slug + '&format=react" target="_blank" style="color:#61dafb;text-decoration:none">⚛ .jsx</a> ';
+      h += '<a href="/__proxy__/annnimate/original?component=' + slug + '&format=vue" target="_blank" style="color:#42b883;text-decoration:none">◆ .vue</a>';
     }
 
     if (kit && KITS[kit]) {
@@ -780,6 +836,7 @@ function stripProtectionAnnnimate(html) {
     fetch('/__proxy__/annnimate/source?component=' + slug)
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        data._slug = slug;
         window._anmData_lib = data;
         document.querySelectorAll('.flex.h-80.items-center.justify-center').forEach(function(lockInner) {
           var box = lockInner.closest('.flex.flex-col.overflow-hidden.border');
@@ -2169,6 +2226,85 @@ const server = http.createServer(async (req, res) => {
 
   // 5. Handle External Proxied Domains — handled earlier (before cookie check), skip here
 
+
+  // 5.23. Annnimate: Original source code via Supabase
+  // GET /__proxy__/annnimate/original?component=curtain-slider — all formats
+  // GET /__proxy__/annnimate/original?component=curtain-slider&format=react — just react
+  // GET /__proxy__/annnimate/original — list all components
+  if (isAnnnimate && pathname === '/__proxy__/annnimate/original') {
+    const component = query.get('component');
+    const format = query.get('format'); // react, vue, js, css, html, or null for all
+    const startTime = Date.now();
+    try {
+      if (!component) {
+        // List all components with code availability
+        const data = await supabaseQuery('animations',
+          'select=slug,title,category,is_free_preview,published_at&is_published=eq.true&order=published_at.desc&limit=200');
+        const duration = Date.now() - startTime;
+        addLog('GET', pathname, 200, duration, { reqHeaders: req.headers, resHeaders: {}, reqBody: '', resBody: data.length + ' components' });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        return res.end(JSON.stringify({ total: data.length, components: data }, null, 2));
+      }
+
+      // Fetch specific component with all code columns
+      const data = await supabaseQuery('animations',
+        'slug=eq.' + encodeURIComponent(component) + '&select=slug,title,category,html_code,css_code,js_code,react_code,vue_code,dependencies,custom_attributes,description');
+      if (!data.length) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Component not found: ' + component }));
+      }
+      const comp = data[0];
+      const duration = Date.now() - startTime;
+
+      // Single format
+      if (format) {
+        const formatMap = {
+          react: { code: comp.react_code, ext: 'jsx', ct: 'text/jsx' },
+          vue: { code: comp.vue_code, ext: 'vue', ct: 'text/html' },
+          js: { code: comp.js_code, ext: 'js', ct: 'application/javascript' },
+          css: { code: comp.css_code, ext: 'css', ct: 'text/css' },
+          html: { code: comp.html_code, ext: 'html', ct: 'text/html' },
+        };
+        const f = formatMap[format];
+        if (!f) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Invalid format. Use: react, vue, js, css, html' }));
+        }
+        addLog('GET', pathname + '?component=' + component + '&format=' + format, 200, duration, { reqHeaders: req.headers, resHeaders: {}, reqBody: '', resBody: (f.code?.length || 0) + 'B' });
+        res.writeHead(200, {
+          'Content-Type': f.ct + '; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+          'Content-Disposition': 'inline; filename="' + component + '.' + f.ext + '"',
+        });
+        return res.end(f.code || '');
+      }
+
+      // All formats
+      addLog('GET', pathname + '?component=' + component, 200, duration, {
+        reqHeaders: req.headers, resHeaders: {},
+        reqBody: '', resBody: `Original: react=${comp.react_code?.length || 0}B vue=${comp.vue_code?.length || 0}B js=${comp.js_code?.length || 0}B`
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      return res.end(JSON.stringify({
+        slug: comp.slug,
+        title: comp.title,
+        category: comp.category,
+        description: comp.description,
+        dependencies: comp.dependencies,
+        attributes: comp.custom_attributes,
+        html: comp.html_code || '',
+        css: comp.css_code || '',
+        js: comp.js_code || '',
+        react: comp.react_code || '',
+        vue: comp.vue_code || '',
+      }, null, 2));
+    } catch (err) {
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    }
+  }
   // 5.24. Annnimate: Kit source code extraction
   // GET /__proxy__/annnimate/kit?kit=reveal — list all components
   // GET /__proxy__/annnimate/kit?kit=reveal&component=logo-draw-split — extract source

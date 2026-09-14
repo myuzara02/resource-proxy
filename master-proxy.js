@@ -640,7 +640,7 @@ function stripProtectionAnnnimate(html) {
   var TAB_ACTIVE = TAB_STYLE + 'rgba(96,208,240,0.3);background:rgba(96,208,240,0.15);color:#60d0f0';
   var TAB_INACTIVE = TAB_STYLE + 'rgba(255,255,255,0.1);background:transparent;color:#999';
   var COPY_STYLE = 'margin-left:auto;' + TAB_STYLE + 'rgba(96,240,144,0.3);background:rgba(96,240,144,0.1);color:#60f090';
-  var PRE_STYLE = 'padding:12px 16px;margin:0;font-size:12px;line-height:1.6;font-family:JetBrains Mono,SF Mono,monospace;white-space:pre;overflow:auto;max-height:500px;color:#d4d4d4;background:#0a0a0f';
+  var PRE_STYLE = 'padding:12px 16px;margin:0;font-size:12px;line-height:1.6;font-family:JetBrains Mono,SF Mono,monospace;white-space:pre;overflow:auto;max-height:500px;color:#d4d4d4;background:#0a0a0f;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;position:relative';
 
   function buildCodeViewer(id, data) {
     var bar = '<div style="display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1">'
@@ -649,7 +649,7 @@ function stripProtectionAnnnimate(html) {
       + '<button onclick="switchTab(\\'' + id + '\\',this,\\'js\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">JS</button>'
       + '<button onclick="copyCodeBlock(\\'' + id + '\\')" style="' + COPY_STYLE + '">📋 Copy</button>'
       + '</div>';
-    var pre = '<pre style="' + PRE_STYLE + '"><code id="' + id + '-code">' + esc(data.html) + '</code></pre>';
+    var pre = '<pre data-lenis-prevent style="' + PRE_STYLE + '"><code id="' + id + '-code">' + esc(data.html) + '</code></pre>';
     return bar + pre;
   }
 
@@ -729,9 +729,11 @@ function stripProtectionAnnnimate(html) {
         document.querySelectorAll('.flex.h-80.items-center.justify-center').forEach(function(lockInner) {
           var box = lockInner.closest('.flex.flex-col.overflow-hidden.border');
           if (!box) return;
+          // Remove overflow-hidden class so it doesn't clip, let <pre> handle scrolling
+          box.className = box.className.replace('overflow-hidden', '');
           box.style.height = 'auto';
-          box.style.maxHeight = '600px';
-          box.style.overflow = 'auto';
+          box.style.maxHeight = 'none';
+          box.style.overflow = 'visible';
           box.innerHTML = buildCodeViewer('lib', data);
         });
         // Remove lock overlays

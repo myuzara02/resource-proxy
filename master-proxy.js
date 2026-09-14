@@ -21,11 +21,11 @@ function addLog(method, path, status, duration, details) {
     path,
     status,
     duration,
-    details: details || {
-      reqHeaders: {},
-      resHeaders: {},
-      reqBody: '',
-      resBody: ''
+    details: {
+      reqHeaders: details?.reqHeaders || {},
+      resHeaders: details?.resHeaders || {},
+      reqBody: (details?.reqBody || '').slice(0, 1000),
+      resBody: (details?.resBody || '').slice(0, 1000)
     }
   });
   if (requestLogs.length > 200) requestLogs.shift();
@@ -174,6 +174,43 @@ function clearCacheEntry(urlPath, cacheDir) {
     const files = fs.readdirSync(cacheDir);
     files.forEach(f => fs.unlinkSync(path.join(cacheDir, f)));
   }
+}
+
+// ─── SOURCE EXTRACTION HELPER ───────────────────────────────────────────────
+function extractSource(html) {
+  const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+  const css = jsBeautify.css(styleMatch ? styleMatch[1].trim() : '', { indent_size: 2 });
+
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  let componentHtml = bodyMatch ? bodyMatch[1] : '';
+  componentHtml = jsBeautify.html(
+    componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim(),
+    { indent_size: 2, wrap_line_length: 0 }
+  );
+
+  const scripts = [];
+  const scriptRegex = /<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/g;
+  let m;
+  while ((m = scriptRegex.exec(html)) !== null) {
+    if (m[1].trim().length > 100) scripts.push(m[1].trim());
+  }
+  scripts.sort((a, b) => b.length - a.length);
+
+  const componentJs = jsBeautify.js(
+    scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '',
+    { indent_size: 2 }
+  );
+  const depsMatch = componentJs.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
+  const deps = depsMatch ? depsMatch[1].replace(/"/g, '').split(',').map(s => s.trim()) : [];
+
+  const anmAttrs = {};
+  const attrRegex = /data-anm-([a-z-]+)="([^"]*)"/g;
+  let am;
+  while ((am = attrRegex.exec(componentHtml)) !== null) {
+    anmAttrs[am[1]] = am[2];
+  }
+
+  return { css, html: componentHtml, js: componentJs, deps, anmAttributes: anmAttrs };
 }
 
 // ─── OUTSETA MOCK ───────────────────────────────────────────────────────────
@@ -925,8 +962,10 @@ async function proxyExternal(req, res, domain, extPath, targetOrigin) {
       reqBody: '',
       resBody: err.message
     });
-    res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end('External proxy error: ' + err.message);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end('External proxy error: ' + err.message);
+    }
   }
 }
 
@@ -949,8 +988,10 @@ async function proxyAsset(res, targetUrl, targetOrigin) {
     const buffer = await response.buffer();
     res.end(buffer);
   } catch (err) {
-    res.writeHead(502);
-    res.end("Proxy error: " + err.message);
+    if (!res.headersSent) {
+      res.writeHead(502);
+      res.end('Proxy error: ' + err.message);
+    }
   }
 }
 
@@ -1934,6 +1975,17 @@ const server = http.createServer(async (req, res) => {
   const pathname = urlParts[0];
   const query = new URLSearchParams(urlParts[1] || '');
 
+  // 0. Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Max-Age': '86400',
+    });
+    return res.end();
+  }
+
   // 1. Handle Master Dashboard / Switching
   if (pathname === '/__dashboard') {
     if (query.has('switch') && query.get('switch') === 'clear') {
@@ -2158,36 +2210,19 @@ const server = http.createServer(async (req, res) => {
         return res.end(html);
       }
 
-      // Extract parts
-      const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
-      const css = jsBeautify.css(styleMatch ? styleMatch[1].trim() : '', { indent_size: 2 });
-      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-      let componentHtml = bodyMatch ? bodyMatch[1] : '';
-      componentHtml = jsBeautify.html(componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim(), { indent_size: 2, wrap_line_length: 0 });
-
-      const scripts = [];
-      const scriptRegex = /<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/g;
-      let m;
-      while ((m = scriptRegex.exec(html)) !== null) {
-        if (m[1].trim().length > 100) scripts.push(m[1].trim());
-      }
-      scripts.sort((a, b) => b.length - a.length);
-      // Find the boot script — the one containing SCRIPT_DEPS (dep loading + built component code)
-      const componentJs = jsBeautify.js(scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '', { indent_size: 2 });
-      const depsMatch = componentJs.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
-      const deps = depsMatch ? depsMatch[1].replace(/"/g, '').split(',').map(s => s.trim()) : [];
-
+      const source = extractSource(html);
       const duration = Date.now() - startTime;
       addLog('GET', pathname + '?kit=' + kit + '&component=' + component, 200, duration, {
         reqHeaders: req.headers, resHeaders: {},
-        reqBody: '', resBody: `Kit extracted: CSS ${css.length}B, HTML ${componentHtml.length}B, JS ${componentJs.length}B`
+        reqBody: '', resBody: `Kit extracted: CSS ${source.css.length}B, HTML ${source.html.length}B, JS ${source.js.length}B`
       });
-
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-      return res.end(JSON.stringify({ kit, component, deps, css, html: componentHtml, js: componentJs }, null, 2));
+      return res.end(JSON.stringify({ kit, component, ...source }, null, 2));
     } catch (err) {
-      res.writeHead(502, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: err.message }));
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     }
   }
 
@@ -2212,68 +2247,26 @@ const server = http.createServer(async (req, res) => {
       }
       const html = await resp.text();
 
-      // Extract CSS
-      const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
-      const css = jsBeautify.css(styleMatch ? styleMatch[1].trim() : '', { indent_size: 2 });
-
-      // Extract component HTML (body minus scripts)
-      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-      let componentHtml = bodyMatch ? bodyMatch[1] : '';
-      componentHtml = jsBeautify.html(componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim(), { indent_size: 2, wrap_line_length: 0 });
-
-      // Extract all inline scripts, sorted by size
-      const scripts = [];
-      const scriptRegex = /<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/g;
-      let m;
-      while ((m = scriptRegex.exec(html)) !== null) {
-        if (m[1].trim().length > 100) scripts.push(m[1].trim());
-      }
-      scripts.sort((a, b) => b.length - a.length);
-
-      // Find the boot script — the one containing SCRIPT_DEPS (dep loading + built component code)
-      const componentJs = jsBeautify.js(scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '', { indent_size: 2 });
-
-      // Extract GSAP plugin dependencies
-      const depsMatch = componentJs.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
-      const deps = depsMatch ? depsMatch[1].replace(/"/g, '').split(',').map(s => s.trim()) : [];
-
-      // Extract data-anm-* attributes
-      const anmAttrs = {};
-      const attrRegex = /data-anm-([a-z-]+)="([^"]*)"/g;
-      let am;
-      while ((am = attrRegex.exec(componentHtml)) !== null) {
-        anmAttrs[am[1]] = am[2];
-      }
-
+      const source = extractSource(html);
       const duration = Date.now() - startTime;
       addLog('GET', pathname + '?component=' + component, 200, duration, {
         reqHeaders: req.headers, resHeaders: {},
-        reqBody: '', resBody: `Extracted: CSS ${css.length}B, HTML ${componentHtml.length}B, JS ${componentJs.length}B`
+        reqBody: '', resBody: `Extracted: CSS ${source.css.length}B, HTML ${source.html.length}B, JS ${source.js.length}B`
       });
 
       const format = query.get('format');
       if (format === 'raw') {
-        // Serve the original sandbox HTML as-is — it's already self-contained
-        // with dep loading, component init, and styles
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         return res.end(html);
       }
 
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      return res.end(JSON.stringify({
-        component,
-        deps,
-        anmAttributes: anmAttrs,
-        css,
-        html: componentHtml,
-        js: componentJs,
-      }, null, 2));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      return res.end(JSON.stringify({ component, ...source }, null, 2));
     } catch (err) {
-      res.writeHead(502, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: err.message }));
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     }
   }
 
@@ -2281,10 +2274,26 @@ const server = http.createServer(async (req, res) => {
   // Unlike Webflow sites, Next.js needs ALL requests proxied (RSC, API, assets, etc.)
   if (isAnnnimate) {
     const startTime = Date.now();
+
+    // Check cache BEFORE hitting upstream (avoids unnecessary fetch)
+    const isHtmlPageReq = req.method === 'GET' && !req.headers['rsc'] && !path.extname(pathname);
+    if (isHtmlPageReq && isCacheValid(pathname, CACHE_DIR)) {
+      const cache = readCache(pathname, CACHE_DIR);
+      if (cache) {
+        const duration = Date.now() - startTime;
+        addLog(req.method, pathname + ' [CACHE]', 200, duration, {
+          reqHeaders: req.headers,
+          resHeaders: { 'Content-Type': 'text/html; charset=utf-8' },
+          reqBody: '', resBody: cache.html.slice(0, 1000)
+        });
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(cache.html);
+      }
+    }
+
     const targetUrl = TARGET_ORIGIN + req.url;
     try {
       const proxyHeaders = getForwardHeaders(req.headers, TARGET_ORIGIN);
-      // Forward RSC-specific headers
       ['rsc', 'next-router-state-tree', 'next-router-prefetch', 'next-router-segment-prefetch', 'next-url'].forEach(h => {
         if (req.headers[h]) proxyHeaders[h] = req.headers[h];
       });
@@ -2308,7 +2317,6 @@ const server = http.createServer(async (req, res) => {
       // Handle redirects
       if (response.status >= 300 && response.status < 400) {
         let location = response.headers.get('location') || '';
-        // Rewrite absolute redirect URLs to relative
         if (location.startsWith('https://annnimate.com')) {
           location = location.replace('https://annnimate.com', '');
         }
@@ -2324,24 +2332,9 @@ const server = http.createServer(async (req, res) => {
 
       let buffer = await response.buffer();
 
-      // Only strip protection on HTML page responses (not RSC flight data, not API, not assets)
+      // Strip protection on HTML page responses (not RSC, not API, not assets)
       const isHtmlPage = contentType.includes('text/html') && !req.headers['rsc'];
       if (isHtmlPage) {
-        // Check cache first
-        if (isCacheValid(pathname, CACHE_DIR)) {
-          const cache = readCache(pathname, CACHE_DIR);
-          if (cache) {
-            const duration = Date.now() - startTime;
-            addLog(req.method, pathname + ' [CACHE]', 200, duration, {
-              reqHeaders: req.headers,
-              resHeaders: { 'Content-Type': 'text/html; charset=utf-8' },
-              reqBody: '', resBody: cache.html
-            });
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            return res.end(cache.html);
-          }
-        }
-
         let html = buffer.toString('utf-8');
         html = stripFn(html);
         if (response.status === 200) writeCache(pathname, html, CACHE_DIR);
@@ -2350,33 +2343,26 @@ const server = http.createServer(async (req, res) => {
         addLog(req.method, req.url + ' [FRESH]', response.status, duration, {
           reqHeaders: req.headers,
           resHeaders: Object.fromEntries(response.headers.entries()),
-          reqBody: '', resBody: html.slice(0, 2000)
+          reqBody: '', resBody: html.slice(0, 1000)
         });
-
         res.writeHead(response.status, { 'Content-Type': 'text/html; charset=utf-8' });
         return res.end(html);
       }
 
-      // Don't rewrite RSC flight data or JS — URL rewriting corrupts
-      // serialized RSC payload and breaks client hydration.
-      // The proxy handles all requests transparently.
-
+      // Non-HTML: forward transparently
       const duration = Date.now() - startTime;
       addLog(req.method, req.url, response.status, duration, {
         reqHeaders: req.headers,
         resHeaders: Object.fromEntries(response.headers.entries()),
-        reqBody: '', resBody: contentType.includes('text') || contentType.includes('json') || contentType.includes('javascript') ? buffer.toString('utf-8').slice(0, 2000) : `[Binary ${buffer.length}B]`
+        reqBody: '', resBody: contentType.includes('text') || contentType.includes('json') || contentType.includes('javascript') ? buffer.toString('utf-8').slice(0, 1000) : `[Binary ${buffer.length}B]`
       });
 
-      // Forward response with CORS headers
       const resHeaders = {
         'Content-Type': contentType,
         'Access-Control-Allow-Origin': '*',
       };
-      const cacheControl = response.headers.get('cache-control');
-      if (cacheControl) resHeaders['Cache-Control'] = cacheControl;
-      const contentDisposition = response.headers.get('content-disposition');
-      if (contentDisposition) resHeaders['Content-Disposition'] = contentDisposition;
+      const cc = response.headers.get('cache-control');
+      if (cc) resHeaders['Cache-Control'] = cc;
 
       res.writeHead(response.status, resHeaders);
       return res.end(buffer);
@@ -2386,8 +2372,11 @@ const server = http.createServer(async (req, res) => {
         reqHeaders: req.headers, resHeaders: {},
         reqBody: '', resBody: err.message
       });
-      res.writeHead(502, { 'Content-Type': 'text/html' });
-      return res.end('<h1>Proxy Error</h1><p>' + err.message + '</p>');
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'text/html' });
+        res.end('<h1>Proxy Error</h1><p>' + err.message + '</p>');
+      }
+      return;
     }
   }
 

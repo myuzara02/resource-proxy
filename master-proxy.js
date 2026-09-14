@@ -635,15 +635,48 @@ function stripProtectionAnnnimate(html) {
 
   function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-  // ─── Force full-page navigation on internal links ───
-  // Next.js SPA routing breaks through the proxy, so we intercept clicks
-  // and force regular navigation which ensures scripts re-execute.
+  // Reusable code viewer builder
+  var TAB_STYLE = 'padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-family:monospace;border:1px solid ';
+  var TAB_ACTIVE = TAB_STYLE + 'rgba(96,208,240,0.3);background:rgba(96,208,240,0.15);color:#60d0f0';
+  var TAB_INACTIVE = TAB_STYLE + 'rgba(255,255,255,0.1);background:transparent;color:#999';
+  var COPY_STYLE = 'margin-left:auto;' + TAB_STYLE + 'rgba(96,240,144,0.3);background:rgba(96,240,144,0.1);color:#60f090';
+  var PRE_STYLE = 'padding:12px 16px;margin:0;font-size:12px;line-height:1.6;font-family:JetBrains Mono,SF Mono,monospace;white-space:pre;overflow-x:auto;color:#d4d4d4;background:#0a0a0f';
+
+  function buildCodeViewer(id, data) {
+    var bar = '<div style="display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1">'
+      + '<button onclick="switchTab(\\'' + id + '\\',this,\\'html\\')" class="' + id + '-tab" style="' + TAB_ACTIVE + '">HTML</button>'
+      + '<button onclick="switchTab(\\'' + id + '\\',this,\\'css\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">CSS</button>'
+      + '<button onclick="switchTab(\\'' + id + '\\',this,\\'js\\')" class="' + id + '-tab" style="' + TAB_INACTIVE + '">JS</button>'
+      + '<button onclick="copyCodeBlock(\\'' + id + '\\')" style="' + COPY_STYLE + '">📋 Copy</button>'
+      + '</div>';
+    var pre = '<pre style="' + PRE_STYLE + '"><code id="' + id + '-code">' + esc(data.html) + '</code></pre>';
+    return bar + pre;
+  }
+
+  // Shared tab switch + copy handlers
+  window.switchTab = function(id, btn, tab) {
+    var code = document.getElementById(id + '-code');
+    var store = window['_anmData_' + id];
+    if (!code || !store) return;
+    code.textContent = tab === 'css' ? store.css : tab === 'js' ? store.js : store.html;
+    document.querySelectorAll('.' + id + '-tab').forEach(function(b) { b.style.cssText = TAB_INACTIVE; });
+    btn.style.cssText = TAB_ACTIVE;
+  };
+  window.copyCodeBlock = function(id) {
+    var code = document.getElementById(id + '-code');
+    if (!code) return;
+    navigator.clipboard.writeText(code.textContent).then(function() {
+      var btns = document.querySelectorAll('button');
+      for (var b of btns) { if (b.textContent === '📋 Copy' && b.onclick && b.getAttribute('onclick').indexOf(id) !== -1) { b.textContent = '✅ Copied!'; setTimeout(function() { b.textContent = '📋 Copy'; }, 2000); break; } }
+    });
+  };
+
+  // ─── Force full-page navigation ───
   document.addEventListener('click', function(e) {
     var a = e.target.closest('a[href]');
     if (!a) return;
     var href = a.getAttribute('href');
     if (!href || href.startsWith('http') || href.startsWith('#') || href.startsWith('mailto:') || a.target === '_blank') return;
-    // Internal relative link — force full page load
     e.preventDefault();
     e.stopPropagation();
     window.location.href = href;
@@ -681,8 +714,8 @@ function stripProtectionAnnnimate(html) {
     document.body.appendChild(el);
   }
 
-  // ─── Unlock component pages ───
-  function tryUnlock() {
+  // ─── Unlock library component pages ───
+  function tryUnlockLibrary() {
     var m = window.location.pathname.match(/^\\/animations\\/([\\w-]+)/);
     if (!m) return;
     var slug = m[1];
@@ -692,36 +725,15 @@ function stripProtectionAnnnimate(html) {
     fetch('/__proxy__/annnimate/source?component=' + slug)
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        window._anmData_lib = data;
         document.querySelectorAll('.flex.h-80.items-center.justify-center').forEach(function(lockInner) {
           var box = lockInner.closest('.flex.flex-col.overflow-hidden.border');
           if (!box) return;
           box.style.height = 'auto';
           box.style.maxHeight = '600px';
           box.style.overflow = 'auto';
-          box.innerHTML = '<div style="display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1">'
-            + '<button onclick="showTab(this,\\'html\\')" class="anm-tab active" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(96,208,240,0.3);background:rgba(96,208,240,0.15);color:#60d0f0;cursor:pointer;font-size:12px;font-family:monospace">HTML</button>'
-            + '<button onclick="showTab(this,\\'css\\')" class="anm-tab" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#999;cursor:pointer;font-size:12px;font-family:monospace">CSS</button>'
-            + '<button onclick="showTab(this,\\'js\\')" class="anm-tab" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#999;cursor:pointer;font-size:12px;font-family:monospace">JS</button>'
-            + '<button onclick="copyCode()" style="margin-left:auto;padding:4px 12px;border-radius:6px;border:1px solid rgba(96,240,144,0.3);background:rgba(96,240,144,0.1);color:#60f090;cursor:pointer;font-size:12px;font-family:monospace">📋 Copy</button>'
-            + '</div>'
-            + '<pre id="anm-code-pre" style="padding:12px 16px;margin:0;font-size:12px;line-height:1.6;font-family:JetBrains Mono,SF Mono,monospace;white-space:pre-wrap;word-break:break-all;color:#d4d4d4;background:#0a0a0f"><code id="anm-code">' + esc(data.html) + '</code></pre>';
+          box.innerHTML = buildCodeViewer('lib', data);
         });
-        window._anmData = data;
-        window.showTab = function(btn, tab) {
-          var code = document.getElementById('anm-code');
-          if (!code) return;
-          code.textContent = tab === 'css' ? data.css : tab === 'js' ? data.js : data.html;
-          document.querySelectorAll('.anm-tab').forEach(function(b) { b.style.background = 'transparent'; b.style.borderColor = 'rgba(255,255,255,0.1)'; b.style.color = '#999'; });
-          btn.style.background = 'rgba(96,208,240,0.15)'; btn.style.borderColor = 'rgba(96,208,240,0.3)'; btn.style.color = '#60d0f0';
-        };
-        window.copyCode = function() {
-          var code = document.getElementById('anm-code');
-          if (!code) return;
-          navigator.clipboard.writeText(code.textContent).then(function() {
-            var btn = document.querySelector('[onclick="copyCode()"]');
-            if (btn) { btn.textContent = '✅ Copied!'; setTimeout(function() { btn.textContent = '📋 Copy'; }, 2000); }
-          });
-        };
         // Remove lock overlays
         document.querySelectorAll('.absolute.inset-0.flex.flex-col').forEach(function(el) { if (el.textContent.indexOf('Members customize') !== -1) el.remove(); });
         document.querySelectorAll('section.border-t').forEach(function(el) { if (el.textContent.indexOf('full code are part of access') !== -1) el.remove(); });
@@ -739,11 +751,69 @@ function stripProtectionAnnnimate(html) {
       .catch(function(e) { console.error('Proxy unlock failed:', e); });
   }
 
+  // ─── Kit code viewer: inject per-component code panels ───
+  function tryUnlockKit() {
+    var m = window.location.pathname.match(/^\\/kits\\/([\\w-]+)$/);
+    if (!m) return;
+    var kit = m[1];
+    var comps = KITS[kit];
+    if (!comps || !comps.length) return;
+
+    // Find a good insertion point — after the main content, before footer
+    var footer = document.querySelector('footer') || document.querySelector('[class*="contentinfo"]');
+    if (!footer) return;
+
+    // Build container
+    var container = document.createElement('section');
+    container.id = 'kit-code-section';
+    container.style.cssText = 'max-width:1200px;margin:40px auto;padding:0 24px;';
+    container.innerHTML = '<h2 style="color:#e8e8f0;font-size:24px;font-weight:700;margin-bottom:24px;font-family:Inter,sans-serif">🔓 Kit Source Code</h2><p style="color:#888;font-size:14px;margin-bottom:32px;font-family:Inter,sans-serif">Select a component to load its source. Click the tabs to switch between HTML, CSS, and JS.</p><div id="kit-comp-buttons" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px"></div><div id="kit-code-viewer" style="border:1px solid rgba(255,255,255,0.1);border-radius:12px;overflow:hidden;display:none"></div>';
+    footer.parentNode.insertBefore(container, footer);
+
+    // Add component buttons
+    var btnBox = document.getElementById('kit-comp-buttons');
+    comps.forEach(function(c) {
+      var btn = document.createElement('button');
+      btn.textContent = c;
+      btn.style.cssText = 'padding:6px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#ccc;cursor:pointer;font-size:12px;font-family:SF Mono,monospace;transition:all 0.2s;';
+      btn.onmouseenter = function() { btn.style.borderColor = 'rgba(96,208,240,0.4)'; btn.style.color = '#60d0f0'; };
+      btn.onmouseleave = function() { if (!btn.classList.contains('active')) { btn.style.borderColor = 'rgba(255,255,255,0.1)'; btn.style.color = '#ccc'; } };
+      btn.onclick = function() {
+        // Mark active
+        btnBox.querySelectorAll('button').forEach(function(b) { b.classList.remove('active'); b.style.borderColor = 'rgba(255,255,255,0.1)'; b.style.color = '#ccc'; });
+        btn.classList.add('active');
+        btn.style.borderColor = 'rgba(96,208,240,0.5)';
+        btn.style.color = '#60d0f0';
+        btn.style.background = 'rgba(96,208,240,0.1)';
+
+        var viewer = document.getElementById('kit-code-viewer');
+        viewer.style.display = 'block';
+        viewer.innerHTML = '<div style="padding:20px;color:#888;font-family:monospace">Loading ' + c + '...</div>';
+
+        fetch('/__proxy__/annnimate/kit?kit=' + kit + '&component=' + c)
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            window['_anmData_kit_' + c.replace(/-/g,'_')] = data;
+            var id = 'kit_' + c.replace(/-/g,'_');
+            viewer.style.height = 'auto';
+            viewer.style.maxHeight = '600px';
+            viewer.style.overflow = 'auto';
+            viewer.innerHTML = buildCodeViewer(id, data);
+            window['_anmData_' + id] = data;
+          })
+          .catch(function(e) {
+            viewer.innerHTML = '<div style="padding:20px;color:#f06060;font-family:monospace">Error: ' + e.message + '</div>';
+          });
+      };
+      btnBox.appendChild(btn);
+    });
+  }
+
   // ─── Init ───
   function init() {
     initBanner();
-    setTimeout(tryUnlock, 1500);
-    // Dismiss popups
+    setTimeout(tryUnlockLibrary, 1500);
+    setTimeout(tryUnlockKit, 2000);
     setTimeout(function() {
       document.querySelectorAll('dialog, [role="dialog"]').forEach(function(d) {
         if (d.textContent.indexOf('Starter Pack') !== -1 || d.textContent.indexOf('free pack') !== -1) d.remove();
@@ -1839,6 +1909,7 @@ function serveDashboard(req, res) {
 
 // ─── MAIN HTTP SERVER ───────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
+  try {
   const urlParts = req.url.split('?');
   const pathname = urlParts[0];
   const query = new URLSearchParams(urlParts[1] || '');
@@ -2380,6 +2451,13 @@ const server = http.createServer(async (req, res) => {
     });
     res.writeHead(500, { 'Content-Type': 'text/html' });
     res.end("<h1>Proxy Error</h1><p>" + err.message + "</p>");
+  }
+  } catch (outerErr) {
+    console.error('  ⚠️ Server error:', outerErr.message);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Server error: ' + outerErr.message);
+    }
   }
 });
 

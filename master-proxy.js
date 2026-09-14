@@ -81,18 +81,50 @@ let SUPABASE_ANON_KEY = null;
 
 // In-memory cache: key → { data, ts }. Avoids repeated Supabase hits.
 const _sbCache = new Map();
-const SB_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
-const SB_MIN_INTERVAL = 1500; // minimum ms between Supabase requests
+const SB_CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours (was 6h)
+const SB_MIN_INTERVAL = 2000; // minimum ms between Supabase requests (was 1.5s)
 let _sbLastRequest = 0;
+const SB_CACHE_FILE = path.join(__dirname, '.cache_annnimate', '_supabase_cache.json');
+
+// Load persisted Supabase cache from disk on startup
+function loadSbCache() {
+  try {
+    if (fs.existsSync(SB_CACHE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SB_CACHE_FILE, 'utf-8'));
+      for (const [k, v] of Object.entries(data)) {
+        if ((Date.now() - v.ts) < SB_CACHE_TTL) _sbCache.set(k, v);
+      }
+      console.log('  📦 Loaded ' + _sbCache.size + ' Supabase cache entries from disk');
+    }
+  } catch (e) {}
+}
+function saveSbCache() {
+  try {
+    ensureCacheDir(CACHE_DIR_ANNNIMATE);
+    const obj = {};
+    _sbCache.forEach((v, k) => { obj[k] = v; });
+    fs.writeFileSync(SB_CACHE_FILE, JSON.stringify(obj), 'utf-8');
+  } catch (e) {}
+}
+
+// Rotate User-Agents to reduce fingerprinting
+const UA_POOL = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+];
+function randomUA() { return UA_POOL[Math.floor(Math.random() * UA_POOL.length)]; }
 
 async function getSupabaseKey() {
   if (SUPABASE_ANON_KEY) return SUPABASE_ANON_KEY;
   try {
-    const r = await fetch(TARGET_ANNNIMATE, { timeout: 10000 });
+    const r = await fetch(TARGET_ANNNIMATE, { timeout: 10000, headers: { 'User-Agent': randomUA() } });
     const html = await r.text();
     const chunks = html.match(/\/_next\/static\/chunks\/[^"'\s]+\.js/g) || [];
     for (const chunk of chunks.slice(0, 40)) {
-      const jr = await fetch(TARGET_ANNNIMATE + chunk, { timeout: 8000 });
+      const jr = await fetch(TARGET_ANNNIMATE + chunk, { timeout: 8000, headers: { 'User-Agent': randomUA() } });
       const js = await jr.text();
       const key = js.match(/eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/);
       if (key) { SUPABASE_ANON_KEY = key[0]; return SUPABASE_ANON_KEY; }
@@ -104,7 +136,7 @@ async function getSupabaseKey() {
 async function supabaseQuery(table, params) {
   const cacheKey = table + '?' + params;
 
-  // Check cache
+  // Check memory cache
   const cached = _sbCache.get(cacheKey);
   if (cached && (Date.now() - cached.ts) < SB_CACHE_TTL) return cached.data;
 
@@ -120,7 +152,7 @@ async function supabaseQuery(table, params) {
       'apikey': key,
       'Authorization': 'Bearer ' + key,
       'Accept': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+      'User-Agent': randomUA(),
     },
     timeout: 10000,
   });
@@ -128,8 +160,9 @@ async function supabaseQuery(table, params) {
   if (r.status !== 200) throw new Error('Supabase returned ' + r.status);
   const data = await r.json();
 
-  // Store in cache
+  // Store in memory + persist to disk
   _sbCache.set(cacheKey, { data, ts: Date.now() });
+  saveSbCache();
   return data;
 }
 
@@ -159,6 +192,8 @@ function getForwardHeaders(reqHeaders, targetOrigin) {
   headersToForward.forEach(h => {
     if (reqHeaders[h]) cleanHeaders[h] = reqHeaders[h];
   });
+  // Fallback to rotated UA if client didn't send one (e.g. curl)
+  if (!cleanHeaders['user-agent']) cleanHeaders['user-agent'] = randomUA();
   cleanHeaders['referer'] = targetOrigin + '/';
   cleanHeaders['origin'] = targetOrigin;
   return cleanHeaders;
@@ -171,6 +206,7 @@ function ensureCacheDir(dir) {
 ensureCacheDir(CACHE_DIR_OSMO);
 ensureCacheDir(CACHE_DIR_ANNNIMATE);
 ensureCacheDir(CACHE_DIR_MODEN);
+loadSbCache(); // Restore persisted Supabase cache
 
 function getCacheKey(urlPath) {
   return encodeURIComponent(urlPath).replace(/%/g, '_');
@@ -2761,7 +2797,19 @@ server.listen(PORT, () => {
   console.log("=========================================\\n");
 });
 
-// Prevent crash on unhandled errors
+// Limit concurrent connections to prevent overload
+server.maxConnections = 50;
+server.keepAliveTimeout = 10000;
+server.headersTimeout = 15000;
+
+// Save cache and prevent crash on errors
+function gracefulShutdown() {
+  console.log('\\n  💾 Saving Supabase cache...');
+  saveSbCache();
+  process.exit(0);
+}
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
 process.on('uncaughtException', (err) => {
   console.error('  ⚠️ Uncaught:', err.message);
 });

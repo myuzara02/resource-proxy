@@ -897,70 +897,53 @@ function stripProtectionAnnnimate(html) {
           }
         }
 
-        // Inject customize panel + customized HTML generator below code viewer
-        if (data.controls && data.controls.length) {
-          var codeBox = document.querySelector('#lib-code')?.closest('[style*="overflow"]')?.parentElement;
-          if (codeBox) {
-            var panel = document.createElement('div');
-            panel.id = 'proxy-customize';
-            panel.style.cssText = 'margin-top:16px;padding:16px 20px;background:#0f0f18;border:1px solid rgba(96,208,240,0.15);border-radius:12px;font-family:Inter,sans-serif;';
-            var ph = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><span style="color:#60d0f0;font-size:13px;font-weight:600">⚙ Customize & Generate</span><button onclick="generateCustomHTML()" style="padding:5px 14px;border-radius:6px;border:1px solid rgba(96,240,144,0.3);background:rgba(96,240,144,0.08);color:#60f090;cursor:pointer;font-size:12px;font-family:monospace">⚡ Generate HTML</button></div>';
-            ph += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">';
-            data.controls.forEach(function(ctrl) {
-              var inputId = 'ctrl-' + ctrl.name;
-              ph += '<div style="display:flex;flex-direction:column;gap:4px">';
-              ph += '<label style="color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:0.5px" for="' + inputId + '">' + ctrl.name + '</label>';
-              if (ctrl.type === 'select' && ctrl.options) {
-                ph += '<select id="' + inputId + '" data-ctrl="' + ctrl.name + '" data-attr="' + (ctrl.attribute || '') + '" style="padding:6px 8px;background:#1a1a28;border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#e0e0e0;font-size:12px">';
-                ctrl.options.forEach(function(o) { var val = typeof o === 'string' ? o : o.value; var lab = typeof o === 'string' ? o : (o.label || o.value); ph += '<option value="' + val + '"' + (val === ctrl.value ? ' selected' : '') + '>' + lab + '</option>'; });
-                ph += '</select>';
-              } else if (ctrl.type === 'boolean') {
-                ph += '<select id="' + inputId + '" data-ctrl="' + ctrl.name + '" data-attr="' + (ctrl.attribute || '') + '" style="padding:6px 8px;background:#1a1a28;border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#e0e0e0;font-size:12px"><option value="true"' + (ctrl.value === 'true' ? ' selected' : '') + '>true</option><option value="false"' + (ctrl.value === 'false' ? ' selected' : '') + '>false</option></select>';
-              } else if (ctrl.type === 'multiselect') {
-                ph += '<input id="' + inputId + '" data-ctrl="' + ctrl.name + '" data-attr="' + (ctrl.attribute || '') + '" type="text" value="' + (ctrl.value || '') + '" placeholder="comma separated" style="padding:6px 8px;background:#1a1a28;border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#e0e0e0;font-size:12px">';
-              } else {
-                ph += '<div style="display:flex;align-items:center;gap:8px">';
-                ph += '<input id="' + inputId + '" data-ctrl="' + ctrl.name + '" data-attr="' + (ctrl.attribute || '') + '" type="range" min="' + (ctrl.min || 0) + '" max="' + (ctrl.max || 10) + '" step="' + (ctrl.step || 0.1) + '" value="' + (ctrl.value || 0) + '" oninput="document.getElementById(\\'' + inputId + '-val\\').textContent=this.value" style="flex:1;accent-color:#60d0f0">';
-                ph += '<span id="' + inputId + '-val" style="color:#60d0f0;font-size:12px;font-family:monospace;min-width:32px">' + (ctrl.value || 0) + '</span>';
-                ph += '</div>';
-              }
-              ph += '</div>';
-            });
-            ph += '</div>';
-            ph += '<pre id="custom-html-output" data-lenis-prevent style="display:none;margin-top:12px;padding:12px;background:#0a0a0f;border:1px solid rgba(255,255,255,0.08);border-radius:8px;font-size:12px;line-height:1.5;font-family:JetBrains Mono,SF Mono,monospace;color:#d4d4d4;white-space:pre;overflow:auto;max-height:300px;overscroll-behavior:contain"></pre>';
-            panel.innerHTML = ph;
-            codeBox.parentElement.insertBefore(panel, codeBox.nextSibling);
-          }
+        // Sync annnimate's native customize panel → auto-update "Full" tab in code viewer.
+        // The native panel changes data-anm-* attrs on the sandbox iframe via postMessage.
+        // We observe those attribute changes on the component root inside the iframe,
+        // then rebuild the Full HTML with the new values.
+        function syncCustomize() {
+          // Watch the aside panel for any input/select changes
+          var aside = document.querySelector('aside');
+          if (!aside) return;
+          aside.addEventListener('input', rebuildFull);
+          aside.addEventListener('change', rebuildFull);
 
-          // Generate customized HTML function
-          window.generateCustomHTML = function() {
-            var d = window._anmOriginalData;
-            if (!d) return;
-            var customHtml = d.html;
-            // Replace attribute values based on control inputs
-            document.querySelectorAll('#proxy-customize [data-ctrl]').forEach(function(input) {
-              var attr = input.dataset.attr;
-              var val = input.value;
-              if (attr && val !== undefined) {
-                // Simple string replace for data-anm-* attributes
-                var old = customHtml.match(new RegExp(attr + '="[^"]*"'));
-                if (old) customHtml = customHtml.replace(old[0], attr + '="' + val + '"');
+          function rebuildFull() {
+            // Small delay to let annnimate's own handler update first
+            setTimeout(function() {
+              var d = window._anmOriginalData;
+              if (!d) return;
+              var customHtml = d.html;
+              // Read current values from the native customize controls
+              aside.querySelectorAll('input[type="range"], select, input[type="text"]').forEach(function(ctrl) {
+                // Find which data-anm attribute this control maps to
+                var label = ctrl.closest('li, div')?.querySelector('span, label, div')?.textContent?.trim()?.toLowerCase();
+                if (!label) return;
+                // Match label to attribute (controls have names like "Duration" → data-anm-duration)
+                (d.controls || []).forEach(function(c) {
+                  if (c.name.toLowerCase() === label && c.attribute) {
+                    var re = new RegExp(c.attribute + '="[^"]*"');
+                    var match = customHtml.match(re);
+                    if (match) customHtml = customHtml.replace(match[0], c.attribute + '="' + ctrl.value + '"');
+                  }
+                });
+              });
+              // Rebuild Full tab content
+              var store = window._anmData_lib;
+              if (store) {
+                store._customHtml = customHtml;
+                store._full = '<!DOCTYPE html>\\n<html lang="en">\\n<head>\\n<meta charset="UTF-8">\\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\\n<style>\\n' + d.css + '\\n</style>\\n</head>\\n<body>\\n' + customHtml + '\\n<script>\\n' + d.js + '\\n<\\/script>\\n</body>\\n</html>';
+                // If Full tab is active, refresh display
+                var code = document.getElementById('lib-code');
+                var activeTab = document.querySelector('.lib-tab[style*="rgba(96,208,240"]');
+                if (code && activeTab && activeTab.textContent.includes('Full')) {
+                  code.textContent = store._full;
+                }
               }
-            });
-            // Build full page
-            var full = '<!DOCTYPE html>\\n<html lang="en">\\n<head>\\n<meta charset="UTF-8">\\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\\n<style>\\n' + d.css + '\\n</style>\\n</head>\\n<body>\\n' + customHtml + '\\n<script>\\n' + d.js + '\\n<\\/script>\\n</body>\\n</html>';
-            var output = document.getElementById('custom-html-output');
-            if (output) {
-              output.style.display = 'block';
-              output.textContent = full;
-            }
-            // Copy to clipboard
-            navigator.clipboard.writeText(full).then(function() {
-              var btn = document.querySelector('[onclick="generateCustomHTML()"]');
-              if (btn) { btn.textContent = '✅ Copied!'; setTimeout(function() { btn.textContent = '⚡ Generate HTML'; }, 2000); }
-            });
-          };
+            }, 200);
+          }
         }
+        setTimeout(syncCustomize, 500);
 
         // Remove lock overlays
         document.querySelectorAll('.absolute.inset-0.flex.flex-col').forEach(function(el) { if (el.textContent.indexOf('Members customize') !== -1) el.remove(); });

@@ -5,6 +5,7 @@ node_modules/
 .cache/
 .cache_osmo/
 .cache_moden/
+.cache_annnimate/
 
 # Environment files
 .env

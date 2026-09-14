@@ -623,159 +623,141 @@ function stripProtectionAnnnimate(html) {
 })();
 </script>`;
 
-  // 2. Unlock script: replaces lock overlays with extracted source code
-  const unlockScript = `<script>
+  // 2. Unlock + banner script — handles SPA navigation via pushState interception
+  const proxyScript = `<script>
 (function() {
-  var slug = window.location.pathname.match(/^\\/animations\\/([\\w-]+)/);
-  if (!slug) return;
-  slug = slug[1];
+  'use strict';
+
+  var KITS = {
+    reveal: ['logo-draw-split','counter-columns','mosaic-dissolve','logo-fill-cover','image-cycle-zoom','image-trail-loader','grid-flash-cover','composing-grid','hero-marquee','flow-field','fractal-glass-hero','tile-orb','depth-parallax-hero'],
+    menu: ['accordion','preview-index','curtain','tile-grid','split-screen','context-shift','push-down','island','pillar','stacked-drawer']
+  };
 
   function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-  function injectCodeViewer(data) {
-    // --- A. Replace "The full source is locked" box with real code ---
-    var lockBoxes = document.querySelectorAll('.flex.h-80.items-center.justify-center');
-    lockBoxes.forEach(function(lockInner) {
-      var lockBox = lockInner.closest('.flex.flex-col.overflow-hidden.border');
-      if (!lockBox) return;
-      lockBox.style.height = 'auto';
-      lockBox.style.maxHeight = '600px';
-      lockBox.style.overflow = 'auto';
-      lockBox.innerHTML = '<div style="display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1">'
-        + '<button onclick="showTab(this,\\'html\\')" class="anm-tab active" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(96,208,240,0.3);background:rgba(96,208,240,0.15);color:#60d0f0;cursor:pointer;font-size:12px;font-family:monospace">HTML</button>'
-        + '<button onclick="showTab(this,\\'css\\')" class="anm-tab" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#999;cursor:pointer;font-size:12px;font-family:monospace">CSS</button>'
-        + '<button onclick="showTab(this,\\'js\\')" class="anm-tab" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#999;cursor:pointer;font-size:12px;font-family:monospace">JS</button>'
-        + '<button onclick="copyCode()" style="margin-left:auto;padding:4px 12px;border-radius:6px;border:1px solid rgba(96,240,144,0.3);background:rgba(96,240,144,0.1);color:#60f090;cursor:pointer;font-size:12px;font-family:monospace">📋 Copy</button>'
-        + '</div>'
-        + '<pre id="anm-code-pre" style="padding:12px 16px;margin:0;font-size:12px;line-height:1.6;font-family:JetBrains Mono,SF Mono,monospace;white-space:pre-wrap;word-break:break-all;color:#d4d4d4;background:#0a0a0f"><code id="anm-code">' + esc(data.html) + '</code></pre>';
-    });
+  // ─── Force full-page navigation on internal links ───
+  // Next.js SPA routing breaks through the proxy, so we intercept clicks
+  // and force regular navigation which ensures scripts re-execute.
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest('a[href]');
+    if (!a) return;
+    var href = a.getAttribute('href');
+    if (!href || href.startsWith('http') || href.startsWith('#') || href.startsWith('mailto:') || a.target === '_blank') return;
+    // Internal relative link — force full page load
+    e.preventDefault();
+    e.stopPropagation();
+    window.location.href = href;
+  }, true);
 
-    window._anmData = data;
-    window.showTab = function(btn, tab) {
-      var code = document.getElementById('anm-code');
-      if (!code) return;
-      var d = window._anmData;
-      if (tab === 'html') code.textContent = d.html;
-      else if (tab === 'css') code.textContent = d.css;
-      else if (tab === 'js') code.textContent = d.js;
-      document.querySelectorAll('.anm-tab').forEach(function(b) {
-        b.style.background = 'transparent';
-        b.style.borderColor = 'rgba(255,255,255,0.1)';
-        b.style.color = '#999';
+  // ─── Banner ───
+  function initBanner() {
+    var path = window.location.pathname;
+    var animMatch = path.match(/^\\/animations\\/([\\w-]+)$/);
+    var kitMatch = path.match(/^\\/kits\\/([\\w-]+)$/);
+    var slug = animMatch ? animMatch[1] : null;
+    var kit = kitMatch ? kitMatch[1] : null;
+
+    var el = document.createElement('div');
+    el.id = 'proxy-banner';
+    el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:999999;background:linear-gradient(135deg,#0f0f0f 0%,#1a1a2e 100%);color:#60d0f0;padding:10px 14px;border-radius:10px;font-family:SF Mono,monospace;font-size:11px;box-shadow:0 4px 24px rgba(0,0,0,0.5);border:1px solid rgba(96,208,240,0.2);backdrop-filter:blur(12px);display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:640px;line-height:1.8;';
+
+    var h = '<span style="cursor:pointer" onclick="window.location.href=\\'/__dashboard\\'">🔓 <span style=\\'color:#fff;text-decoration:underline\\'>Switch</span></span>';
+
+    if (slug) {
+      h += ' <span style="color:rgba(255,255,255,0.15)">|</span> ';
+      h += '<a href="/__proxy__/annnimate/source?component=' + slug + '" target="_blank" style="color:#60f090;text-decoration:none">📦 JSON</a> ';
+      h += '<a href="/__proxy__/annnimate/source?component=' + slug + '&format=raw" target="_blank" style="color:#f0a060;text-decoration:none">🔧 HTML</a>';
+    }
+
+    if (kit && KITS[kit]) {
+      h += ' <span style="color:rgba(255,255,255,0.15)">|</span> ';
+      h += '<span style="color:#aaa">Kit ' + kit + ':</span> ';
+      KITS[kit].forEach(function(c) {
+        h += '<a href="/__proxy__/annnimate/kit?kit=' + kit + '&component=' + c + '&format=raw" target="_blank" style="color:#f0a060;text-decoration:none;margin:0 2px" title="' + c + '">' + c.replace(/-./g, function(m){return m[1].toUpperCase()}) + '</a> ';
       });
-      btn.style.background = 'rgba(96,208,240,0.15)';
-      btn.style.borderColor = 'rgba(96,208,240,0.3)';
-      btn.style.color = '#60d0f0';
-    };
-    window.copyCode = function() {
-      var code = document.getElementById('anm-code');
-      if (!code) return;
-      navigator.clipboard.writeText(code.textContent).then(function() {
-        var btn = document.querySelector('[onclick="copyCode()"]');
-        if (btn) { btn.textContent = '✅ Copied!'; setTimeout(function() { btn.textContent = '📋 Copy'; }, 2000); }
-      });
-    };
+    }
 
-    // --- B. Remove "Members customize everything" overlay ---
-    document.querySelectorAll('.absolute.inset-0.flex.flex-col').forEach(function(el) {
-      if (el.textContent.indexOf('Members customize') !== -1) el.remove();
-    });
-
-    // --- C. Remove "Get access" / paywall sections ---
-    document.querySelectorAll('section.border-t').forEach(function(el) {
-      if (el.textContent.indexOf('full code are part of access') !== -1) el.remove();
-    });
-
-    // --- D. Remove ALL "locked" / "free pack" sections in sidebar and main ---
-    document.querySelectorAll('p, div, span').forEach(function(el) {
-      var t = el.textContent || '';
-      if (t.indexOf('is locked') !== -1 && t.length < 200) {
-        // Walk up to find a removable container
-        var parent = el.closest('.flex.flex-col.items-center.gap-10') 
-                  || el.closest('[class*="border-t"][class*="pt-20"]')
-                  || el.closest('.flex.w-full.max-w-\\[26rem\\]');
-        if (parent) parent.remove();
-        else el.remove();
-      }
-    });
-
-    // Remove "Unlock everything" CTA links
-    document.querySelectorAll('a[href*="/checkout"]').forEach(function(el) {
-      if (el.textContent.indexOf('Unlock') !== -1) {
-        var cta = el.closest('.flex.flex-col') || el.parentElement;
-        if (cta && cta.children.length <= 3) cta.remove();
-      }
-    });
-
-    // --- E. Enable disabled customize sliders ---
-    document.querySelectorAll('input[disabled], select[disabled], button[disabled]').forEach(function(el) {
-      el.disabled = false;
-      el.style.opacity = '1';
-      el.style.pointerEvents = 'auto';
-    });
-
-    // --- F. Auto-dismiss "Free starter pack" popup ---
-    setTimeout(function() {
-      document.querySelectorAll('dialog, [role="dialog"]').forEach(function(d) { 
-        if (d.textContent.indexOf('Starter Pack') !== -1 || d.textContent.indexOf('free pack') !== -1) d.remove(); 
-      });
-      // Also try escape key approach
-      document.querySelectorAll('button[aria-label="Close"], button[class*="absolute"]').forEach(function(b) {
-        if (b.closest('[class*="fixed"]') || b.closest('[class*="modal"]')) b.click();
-      });
-    }, 2000);
+    el.innerHTML = h;
+    document.body.appendChild(el);
   }
 
-  // Fetch source and inject — retry until DOM is ready
-  function tryInject() {
+  // ─── Unlock component pages ───
+  function tryUnlock() {
+    var m = window.location.pathname.match(/^\\/animations\\/([\\w-]+)/);
+    if (!m) return;
+    var slug = m[1];
     var lockBox = document.querySelector('.flex.h-80.items-center.justify-center');
-    if (!lockBox) {
-      if (document.readyState === 'complete') return; // no lock on this page (free component)
-      setTimeout(tryInject, 500);
-      return;
-    }
+    if (!lockBox) return;
+
     fetch('/__proxy__/annnimate/source?component=' + slug)
       .then(function(r) { return r.json(); })
-      .then(injectCodeViewer)
-      .catch(function(e) { console.error('Proxy source extraction failed:', e); });
+      .then(function(data) {
+        document.querySelectorAll('.flex.h-80.items-center.justify-center').forEach(function(lockInner) {
+          var box = lockInner.closest('.flex.flex-col.overflow-hidden.border');
+          if (!box) return;
+          box.style.height = 'auto';
+          box.style.maxHeight = '600px';
+          box.style.overflow = 'auto';
+          box.innerHTML = '<div style="display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.3);position:sticky;top:0;z-index:1">'
+            + '<button onclick="showTab(this,\\'html\\')" class="anm-tab active" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(96,208,240,0.3);background:rgba(96,208,240,0.15);color:#60d0f0;cursor:pointer;font-size:12px;font-family:monospace">HTML</button>'
+            + '<button onclick="showTab(this,\\'css\\')" class="anm-tab" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#999;cursor:pointer;font-size:12px;font-family:monospace">CSS</button>'
+            + '<button onclick="showTab(this,\\'js\\')" class="anm-tab" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#999;cursor:pointer;font-size:12px;font-family:monospace">JS</button>'
+            + '<button onclick="copyCode()" style="margin-left:auto;padding:4px 12px;border-radius:6px;border:1px solid rgba(96,240,144,0.3);background:rgba(96,240,144,0.1);color:#60f090;cursor:pointer;font-size:12px;font-family:monospace">📋 Copy</button>'
+            + '</div>'
+            + '<pre id="anm-code-pre" style="padding:12px 16px;margin:0;font-size:12px;line-height:1.6;font-family:JetBrains Mono,SF Mono,monospace;white-space:pre-wrap;word-break:break-all;color:#d4d4d4;background:#0a0a0f"><code id="anm-code">' + esc(data.html) + '</code></pre>';
+        });
+        window._anmData = data;
+        window.showTab = function(btn, tab) {
+          var code = document.getElementById('anm-code');
+          if (!code) return;
+          code.textContent = tab === 'css' ? data.css : tab === 'js' ? data.js : data.html;
+          document.querySelectorAll('.anm-tab').forEach(function(b) { b.style.background = 'transparent'; b.style.borderColor = 'rgba(255,255,255,0.1)'; b.style.color = '#999'; });
+          btn.style.background = 'rgba(96,208,240,0.15)'; btn.style.borderColor = 'rgba(96,208,240,0.3)'; btn.style.color = '#60d0f0';
+        };
+        window.copyCode = function() {
+          var code = document.getElementById('anm-code');
+          if (!code) return;
+          navigator.clipboard.writeText(code.textContent).then(function() {
+            var btn = document.querySelector('[onclick="copyCode()"]');
+            if (btn) { btn.textContent = '✅ Copied!'; setTimeout(function() { btn.textContent = '📋 Copy'; }, 2000); }
+          });
+        };
+        // Remove lock overlays
+        document.querySelectorAll('.absolute.inset-0.flex.flex-col').forEach(function(el) { if (el.textContent.indexOf('Members customize') !== -1) el.remove(); });
+        document.querySelectorAll('section.border-t').forEach(function(el) { if (el.textContent.indexOf('full code are part of access') !== -1) el.remove(); });
+        document.querySelectorAll('p, div, span').forEach(function(el) {
+          if ((el.textContent || '').indexOf('is locked') !== -1 && el.textContent.length < 200) {
+            var p = el.closest('.flex.flex-col.items-center.gap-10') || el.closest('[class*="border-t"][class*="pt-20"]');
+            if (p) p.remove(); else el.remove();
+          }
+        });
+        document.querySelectorAll('a[href*="/checkout"]').forEach(function(el) {
+          if (el.textContent.indexOf('Unlock') !== -1) { var c = el.closest('.flex.flex-col') || el.parentElement; if (c && c.children.length <= 3) c.remove(); }
+        });
+        document.querySelectorAll('input[disabled], select[disabled], button[disabled]').forEach(function(el) { el.disabled = false; el.style.opacity = '1'; el.style.pointerEvents = 'auto'; });
+      })
+      .catch(function(e) { console.error('Proxy unlock failed:', e); });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() { setTimeout(tryInject, 1000); });
-  } else {
-    setTimeout(tryInject, 1000);
+  // ─── Init ───
+  function init() {
+    initBanner();
+    setTimeout(tryUnlock, 1500);
+    // Dismiss popups
+    setTimeout(function() {
+      document.querySelectorAll('dialog, [role="dialog"]').forEach(function(d) {
+        if (d.textContent.indexOf('Starter Pack') !== -1 || d.textContent.indexOf('free pack') !== -1) d.remove();
+      });
+    }, 3000);
   }
-})();
-</script>`;
 
-  // 3. Proxy banner
-  const bannerScript = `<script>
-(function() {
-  var animMatch = window.location.pathname.match(/^\\/animations\\/([\\w-]+)$/);
-  var kitMatch = window.location.pathname.match(/^\\/kits\\/([\\w-]+)$/);
-  var slug = animMatch ? animMatch[1] : null;
-  var kit = kitMatch ? kitMatch[1] : null;
-  var el = document.createElement('div');
-  el.id = 'proxy-banner';
-  el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:999999;background:linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 100%);color:#60d0f0;padding:10px 18px;border-radius:10px;font-family:SF Mono,monospace;font-size:12px;box-shadow:0 4px 24px rgba(0,0,0,0.5);border:1px solid rgba(96,208,240,0.2);backdrop-filter:blur(12px);display:flex;gap:12px;align-items:center;flex-wrap:wrap;max-width:600px;';
-  var items = '<span style="cursor:pointer" onclick="window.location.href=\\'/__dashboard\\'">🔓 Proxy Active — <span style=\\'color:#fff;text-decoration:underline\\'>Switch</span></span>';
-  if (slug) {
-    items += '<span style="color:rgba(255,255,255,0.2)">|</span>';
-    items += '<a href="/__proxy__/annnimate/source?component=' + slug + '" target="_blank" style="color:#60f090;text-decoration:none;cursor:pointer">📦 JSON</a>';
-    items += '<a href="/__proxy__/annnimate/source?component=' + slug + '&format=raw" target="_blank" style="color:#f0a060;text-decoration:none;cursor:pointer">🔧 HTML</a>';
-  }
-  if (kit) {
-    items += '<span style="color:rgba(255,255,255,0.2)">|</span>';
-    items += '<a href="/__proxy__/annnimate/kit?kit=' + kit + '" target="_blank" style="color:#60f090;text-decoration:none;cursor:pointer">📦 Kit Components</a>';
-    items += '<span style="color:rgba(255,255,255,0.15);font-size:10px"> (click any → &format=raw for HTML)</span>';
-  }
-  el.innerHTML = items;
-  document.body.appendChild(el);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function() { setTimeout(init, 800); });
+  else setTimeout(init, 800);
 })();
 </script>`;
 
   html = html.replace('</head>', fetchInterceptor + '</head>');
-  html = html.replace('</body>', unlockScript + bannerScript + '</body>');
+  html = html.replace('</body>', proxyScript + '</body>');
   return html;
 }
 
@@ -2059,7 +2041,7 @@ const server = http.createServer(async (req, res) => {
     // Kit component listing
     const KIT_COMPONENTS = {
       reveal: ['logo-draw-split','counter-columns','mosaic-dissolve','logo-fill-cover','image-cycle-zoom','image-trail-loader','grid-flash-cover','composing-grid','hero-marquee','flow-field','fractal-glass-hero','tile-orb','depth-parallax-hero'],
-      menu: []
+      menu: ['accordion','preview-index','curtain','tile-grid','split-screen','context-shift','push-down','island','pillar','stacked-drawer']
     };
     if (!component) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2407,4 +2389,12 @@ server.listen(PORT, () => {
   console.log("=========================================");
   console.log("Dashboard: http://localhost:" + PORT + "/");
   console.log("=========================================\\n");
+});
+
+// Prevent crash on unhandled errors
+process.on('uncaughtException', (err) => {
+  console.error('  ⚠️ Uncaught:', err.message);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('  ⚠️ Unhandled rejection:', err?.message || err);
 });

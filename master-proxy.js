@@ -77,12 +77,17 @@ let PROXIED_DOMAINS_ANNNIMATE = [
 
 // ─── ANNNIMATE SUPABASE (source code extraction) ────────────────────────────
 const SUPABASE_URL = 'https://awfklrxbaytuhycequvl.supabase.co';
-let SUPABASE_ANON_KEY = null; // fetched lazily from annnimate JS bundle
+let SUPABASE_ANON_KEY = null;
+
+// In-memory cache: key → { data, ts }. Avoids repeated Supabase hits.
+const _sbCache = new Map();
+const SB_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+const SB_MIN_INTERVAL = 1500; // minimum ms between Supabase requests
+let _sbLastRequest = 0;
 
 async function getSupabaseKey() {
   if (SUPABASE_ANON_KEY) return SUPABASE_ANON_KEY;
   try {
-    // Fetch homepage to find JS chunk containing the key
     const r = await fetch(TARGET_ANNNIMATE, { timeout: 10000 });
     const html = await r.text();
     const chunks = html.match(/\/_next\/static\/chunks\/[^"'\s]+\.js/g) || [];
@@ -97,15 +102,35 @@ async function getSupabaseKey() {
 }
 
 async function supabaseQuery(table, params) {
+  const cacheKey = table + '?' + params;
+
+  // Check cache
+  const cached = _sbCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts) < SB_CACHE_TTL) return cached.data;
+
+  // Rate limit
+  const wait = SB_MIN_INTERVAL - (Date.now() - _sbLastRequest);
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+
   const key = await getSupabaseKey();
   if (!key) throw new Error('Supabase anon key not available');
   const url = SUPABASE_URL + '/rest/v1/' + table + '?' + params;
   const r = await fetch(url, {
-    headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
+    headers: {
+      'apikey': key,
+      'Authorization': 'Bearer ' + key,
+      'Accept': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+    },
     timeout: 10000,
   });
+  _sbLastRequest = Date.now();
   if (r.status !== 200) throw new Error('Supabase returned ' + r.status);
-  return r.json();
+  const data = await r.json();
+
+  // Store in cache
+  _sbCache.set(cacheKey, { data, ts: Date.now() });
+  return data;
 }
 
 // ─── DOMAIN DISCOVERY & HEADERS FORWARDING ──────────────────────────────────
@@ -831,12 +856,10 @@ function stripProtectionAnnnimate(html) {
     if (!m) return;
     var slug = m[1];
     var lockBox = document.querySelector('.flex.h-80.items-center.justify-center');
-    if (!lockBox) return;
 
     fetch('/__proxy__/annnimate/original?component=' + slug)
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        // Map Supabase fields to code viewer format
         var viewerData = {
           _slug: slug,
           html: data.html || '',
@@ -844,18 +867,101 @@ function stripProtectionAnnnimate(html) {
           js: data.js || '',
           _react: data.react || '',
           _vue: data.vue || '',
-          deps: data.dependencies || []
+          deps: data.dependencies || [],
+          _controls: data.controls || [],
+          _selectors: data.selectors || [],
+          _tips: data.tips || [],
         };
         window._anmData_lib = viewerData;
-        document.querySelectorAll('.flex.h-80.items-center.justify-center').forEach(function(lockInner) {
-          var box = lockInner.closest('.flex.flex-col.overflow-hidden.border');
-          if (!box) return;
-          box.className = box.className.replace('overflow-hidden', '');
-          box.style.height = 'auto';
-          box.style.maxHeight = 'none';
-          box.style.overflow = 'visible';
-          box.innerHTML = buildCodeViewer('lib', viewerData);
-        });
+        window._anmOriginalData = data;
+
+        // Inject code viewer — replace lock box if paid, or append after preview if free
+        if (lockBox) {
+          document.querySelectorAll('.flex.h-80.items-center.justify-center').forEach(function(lockInner) {
+            var box = lockInner.closest('.flex.flex-col.overflow-hidden.border');
+            if (!box) return;
+            box.className = box.className.replace('overflow-hidden', '');
+            box.style.height = 'auto';
+            box.style.maxHeight = 'none';
+            box.style.overflow = 'visible';
+            box.innerHTML = buildCodeViewer('lib', viewerData);
+          });
+        } else {
+          // Free component: insert code viewer after the iframe/preview section
+          var previewSection = document.querySelector('iframe')?.closest('div')?.parentElement;
+          if (previewSection) {
+            var codeDiv = document.createElement('div');
+            codeDiv.style.cssText = 'margin-top:16px;border:1px solid rgba(255,255,255,0.1);border-radius:12px;overflow:hidden;';
+            codeDiv.innerHTML = buildCodeViewer('lib', viewerData);
+            previewSection.parentElement.insertBefore(codeDiv, previewSection.nextSibling);
+          }
+        }
+
+        // Inject customize panel + customized HTML generator below code viewer
+        if (data.controls && data.controls.length) {
+          var codeBox = document.querySelector('#lib-code')?.closest('[style*="overflow"]')?.parentElement;
+          if (codeBox) {
+            var panel = document.createElement('div');
+            panel.id = 'proxy-customize';
+            panel.style.cssText = 'margin-top:16px;padding:16px 20px;background:#0f0f18;border:1px solid rgba(96,208,240,0.15);border-radius:12px;font-family:Inter,sans-serif;';
+            var ph = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><span style="color:#60d0f0;font-size:13px;font-weight:600">⚙ Customize & Generate</span><button onclick="generateCustomHTML()" style="padding:5px 14px;border-radius:6px;border:1px solid rgba(96,240,144,0.3);background:rgba(96,240,144,0.08);color:#60f090;cursor:pointer;font-size:12px;font-family:monospace">⚡ Generate HTML</button></div>';
+            ph += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">';
+            data.controls.forEach(function(ctrl) {
+              var inputId = 'ctrl-' + ctrl.name;
+              ph += '<div style="display:flex;flex-direction:column;gap:4px">';
+              ph += '<label style="color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:0.5px" for="' + inputId + '">' + ctrl.name + '</label>';
+              if (ctrl.type === 'select' && ctrl.options) {
+                ph += '<select id="' + inputId + '" data-ctrl="' + ctrl.name + '" data-attr="' + (ctrl.attribute || '') + '" style="padding:6px 8px;background:#1a1a28;border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#e0e0e0;font-size:12px">';
+                ctrl.options.forEach(function(o) { var val = typeof o === 'string' ? o : o.value; var lab = typeof o === 'string' ? o : (o.label || o.value); ph += '<option value="' + val + '"' + (val === ctrl.value ? ' selected' : '') + '>' + lab + '</option>'; });
+                ph += '</select>';
+              } else if (ctrl.type === 'boolean') {
+                ph += '<select id="' + inputId + '" data-ctrl="' + ctrl.name + '" data-attr="' + (ctrl.attribute || '') + '" style="padding:6px 8px;background:#1a1a28;border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#e0e0e0;font-size:12px"><option value="true"' + (ctrl.value === 'true' ? ' selected' : '') + '>true</option><option value="false"' + (ctrl.value === 'false' ? ' selected' : '') + '>false</option></select>';
+              } else if (ctrl.type === 'multiselect') {
+                ph += '<input id="' + inputId + '" data-ctrl="' + ctrl.name + '" data-attr="' + (ctrl.attribute || '') + '" type="text" value="' + (ctrl.value || '') + '" placeholder="comma separated" style="padding:6px 8px;background:#1a1a28;border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#e0e0e0;font-size:12px">';
+              } else {
+                ph += '<div style="display:flex;align-items:center;gap:8px">';
+                ph += '<input id="' + inputId + '" data-ctrl="' + ctrl.name + '" data-attr="' + (ctrl.attribute || '') + '" type="range" min="' + (ctrl.min || 0) + '" max="' + (ctrl.max || 10) + '" step="' + (ctrl.step || 0.1) + '" value="' + (ctrl.value || 0) + '" oninput="document.getElementById(\\'' + inputId + '-val\\').textContent=this.value" style="flex:1;accent-color:#60d0f0">';
+                ph += '<span id="' + inputId + '-val" style="color:#60d0f0;font-size:12px;font-family:monospace;min-width:32px">' + (ctrl.value || 0) + '</span>';
+                ph += '</div>';
+              }
+              ph += '</div>';
+            });
+            ph += '</div>';
+            ph += '<pre id="custom-html-output" data-lenis-prevent style="display:none;margin-top:12px;padding:12px;background:#0a0a0f;border:1px solid rgba(255,255,255,0.08);border-radius:8px;font-size:12px;line-height:1.5;font-family:JetBrains Mono,SF Mono,monospace;color:#d4d4d4;white-space:pre;overflow:auto;max-height:300px;overscroll-behavior:contain"></pre>';
+            panel.innerHTML = ph;
+            codeBox.parentElement.insertBefore(panel, codeBox.nextSibling);
+          }
+
+          // Generate customized HTML function
+          window.generateCustomHTML = function() {
+            var d = window._anmOriginalData;
+            if (!d) return;
+            var customHtml = d.html;
+            // Replace attribute values based on control inputs
+            document.querySelectorAll('#proxy-customize [data-ctrl]').forEach(function(input) {
+              var attr = input.dataset.attr;
+              var val = input.value;
+              if (attr && val !== undefined) {
+                // Simple string replace for data-anm-* attributes
+                var old = customHtml.match(new RegExp(attr + '="[^"]*"'));
+                if (old) customHtml = customHtml.replace(old[0], attr + '="' + val + '"');
+              }
+            });
+            // Build full page
+            var full = '<!DOCTYPE html>\\n<html lang="en">\\n<head>\\n<meta charset="UTF-8">\\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\\n<style>\\n' + d.css + '\\n</style>\\n</head>\\n<body>\\n' + customHtml + '\\n<script>\\n' + d.js + '\\n<\\/script>\\n</body>\\n</html>';
+            var output = document.getElementById('custom-html-output');
+            if (output) {
+              output.style.display = 'block';
+              output.textContent = full;
+            }
+            // Copy to clipboard
+            navigator.clipboard.writeText(full).then(function() {
+              var btn = document.querySelector('[onclick="generateCustomHTML()"]');
+              if (btn) { btn.textContent = '✅ Copied!'; setTimeout(function() { btn.textContent = '⚡ Generate HTML'; }, 2000); }
+            });
+          };
+        }
+
         // Remove lock overlays
         document.querySelectorAll('.absolute.inset-0.flex.flex-col').forEach(function(el) { if (el.textContent.indexOf('Members customize') !== -1) el.remove(); });
         document.querySelectorAll('section.border-t').forEach(function(el) { if (el.textContent.indexOf('full code are part of access') !== -1) el.remove(); });

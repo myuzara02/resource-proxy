@@ -1165,24 +1165,25 @@ async function proxyAsset(res, targetUrl, targetOrigin) {
   try {
     const response = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Referer': targetOrigin + '/',
+        'Accept': '*/*',
       },
       redirect: 'follow',
       timeout: 8000,
     });
+    const buffer = await response.buffer();
     const contentType = response.headers.get('content-type') || 'application/octet-stream';
     res.writeHead(response.status, {
       'Content-Type': contentType,
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'public, max-age=3600',
     });
-    const buffer = await response.buffer();
     res.end(buffer);
   } catch (err) {
     if (!res.headersSent) {
-      res.writeHead(502);
-      res.end('Proxy error: ' + err.message);
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end('Asset proxy error: ' + err.message);
     }
   }
 }
@@ -2725,7 +2726,7 @@ const server = http.createServer(async (req, res) => {
       reqHeaders: req.headers,
       resHeaders: Object.fromEntries(fetchResponse.headers.entries()),
       reqBody: '',
-      resBody: html
+      resBody: html.slice(0, 1000)
     });
 
     res.writeHead(fetchResponse.status, { 'Content-Type': 'text/html' });
@@ -2738,8 +2739,10 @@ const server = http.createServer(async (req, res) => {
       reqBody: '',
       resBody: err.message
     });
-    res.writeHead(500, { 'Content-Type': 'text/html' });
-    res.end("<h1>Proxy Error</h1><p>" + err.message + "</p>");
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/html' });
+      res.end('<h1>Proxy Error</h1><p>' + err.message + '</p>');
+    }
   }
   } catch (outerErr) {
     console.error('  ⚠️ Server error:', outerErr.message);

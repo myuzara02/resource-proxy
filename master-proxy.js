@@ -4,6 +4,7 @@ const cheerio = require('cheerio');
 const path = require('path');
 const fs = require('fs');
 const { URL } = require('url');
+const jsBeautify = require('js-beautify');
 
 const PORT = process.env.PORT || 4000;
 const CACHE_TTL = 24 * 60 * 60 * 1000;
@@ -2159,10 +2160,10 @@ const server = http.createServer(async (req, res) => {
 
       // Extract parts
       const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
-      const css = styleMatch ? styleMatch[1].trim() : '';
+      const css = jsBeautify.css(styleMatch ? styleMatch[1].trim() : '', { indent_size: 2 });
       const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
       let componentHtml = bodyMatch ? bodyMatch[1] : '';
-      componentHtml = componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim();
+      componentHtml = jsBeautify.html(componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim(), { indent_size: 2, wrap_line_length: 0 });
 
       const scripts = [];
       const scriptRegex = /<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/g;
@@ -2172,7 +2173,7 @@ const server = http.createServer(async (req, res) => {
       }
       scripts.sort((a, b) => b.length - a.length);
       // Find the boot script — the one containing SCRIPT_DEPS (dep loading + built component code)
-      const componentJs = scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '';
+      const componentJs = jsBeautify.js(scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '', { indent_size: 2 });
       const depsMatch = componentJs.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);
       const deps = depsMatch ? depsMatch[1].replace(/"/g, '').split(',').map(s => s.trim()) : [];
 
@@ -2213,12 +2214,12 @@ const server = http.createServer(async (req, res) => {
 
       // Extract CSS
       const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
-      const css = styleMatch ? styleMatch[1].trim() : '';
+      const css = jsBeautify.css(styleMatch ? styleMatch[1].trim() : '', { indent_size: 2 });
 
       // Extract component HTML (body minus scripts)
       const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
       let componentHtml = bodyMatch ? bodyMatch[1] : '';
-      componentHtml = componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim();
+      componentHtml = jsBeautify.html(componentHtml.replace(/<script[\s\S]*?<\/script>/g, '').trim(), { indent_size: 2, wrap_line_length: 0 });
 
       // Extract all inline scripts, sorted by size
       const scripts = [];
@@ -2230,7 +2231,7 @@ const server = http.createServer(async (req, res) => {
       scripts.sort((a, b) => b.length - a.length);
 
       // Find the boot script — the one containing SCRIPT_DEPS (dep loading + built component code)
-      const componentJs = scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '';
+      const componentJs = jsBeautify.js(scripts.find(s => s.includes('SCRIPT_DEPS')) || scripts[0] || '', { indent_size: 2 });
 
       // Extract GSAP plugin dependencies
       const depsMatch = componentJs.match(/SCRIPT_DEPS\s*=\s*\[([^\]]+)\]/);

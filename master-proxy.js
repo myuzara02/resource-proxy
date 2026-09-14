@@ -911,11 +911,21 @@ function stripProtectionAnnnimate(html) {
         // We observe those attribute changes on the component root inside the iframe,
         // then rebuild the Full HTML with the new values.
         function syncCustomize() {
-          // Watch the aside panel for any input/select changes
           var aside = document.querySelector('aside');
           if (!aside) return;
+
+          // Build a map: normalized aria-label → { attribute, defaultValue }
+          var controlMap = {};
+          (data.controls || []).forEach(function(c) {
+            // "thumb-size" → "thumb size", "duration" → "duration"
+            var normalized = c.name.replace(/-/g, ' ').toLowerCase();
+            controlMap[normalized] = { attr: c.attribute, def: String(c.value) };
+          });
+
           aside.addEventListener('input', rebuildFull);
           aside.addEventListener('change', rebuildFull);
+          // Also catch clicks (for dropdowns/buttons that don't fire input)
+          aside.addEventListener('click', function() { setTimeout(rebuildFull, 300); });
 
           function rebuildFull() {
             setTimeout(function() {
@@ -923,30 +933,44 @@ function stripProtectionAnnnimate(html) {
               if (!d) return;
               var customHtml = d.html;
               var changed = {};
-              // Read current values from the native customize controls
-              aside.querySelectorAll('input[type="range"], select, input[type="text"]').forEach(function(ctrl) {
-                var label = ctrl.closest('li, div')?.querySelector('span, label, div')?.textContent?.trim()?.toLowerCase();
-                if (!label) return;
-                (d.controls || []).forEach(function(c) {
-                  if (c.name.toLowerCase() === label && c.attribute) {
-                    var re = new RegExp(c.attribute + '="[^"]*"');
-                    var match = customHtml.match(re);
-                    if (match) {
-                      var newVal = ctrl.value;
-                      customHtml = customHtml.replace(match[0], c.attribute + '="' + newVal + '"');
-                      // Track if value differs from default
-                      if (String(newVal) !== String(c.value)) changed[c.attribute] = true;
-                    }
-                  }
-                });
+
+              // Read values from native controls using aria-label
+              aside.querySelectorAll('input[type="range"], select').forEach(function(ctrl) {
+                var ariaLabel = (ctrl.getAttribute('aria-label') || '').toLowerCase();
+                var mapping = controlMap[ariaLabel];
+                if (!mapping) return;
+                var newVal = ctrl.value;
+                var re = new RegExp(mapping.attr + '="[^"]*"');
+                var match = customHtml.match(re);
+                if (match) {
+                  customHtml = customHtml.replace(match[0], mapping.attr + '="' + newVal + '"');
+                  if (newVal !== mapping.def) changed[mapping.attr] = true;
+                }
               });
+
+              // Also handle button-based controls (Side, Ease) — read displayed text
+              aside.querySelectorAll('button[aria-label]').forEach(function(btn) {
+                var ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                var mapping = controlMap[ariaLabel];
+                if (!mapping) return;
+                // The button shows the current value as text in a child span
+                var valSpan = btn.querySelector('span:first-child, div:first-child');
+                var newVal = valSpan ? valSpan.textContent.trim().toLowerCase() : '';
+                if (!newVal) return;
+                var re = new RegExp(mapping.attr + '="[^"]*"');
+                var match = customHtml.match(re);
+                if (match) {
+                  customHtml = customHtml.replace(match[0], mapping.attr + '="' + newVal + '"');
+                  if (newVal !== mapping.def) changed[mapping.attr] = true;
+                }
+              });
+
               var store = window._anmData_lib;
               if (store) {
                 store._customHtml = customHtml;
                 store._changed = changed;
                 store.html = customHtml;
                 store._full = '<!DOCTYPE html>\\n<html lang="en">\\n<head>\\n<meta charset="UTF-8">\\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\\n<style>\\n' + d.css + '\\n</style>\\n</head>\\n<body>\\n' + customHtml + '\\n<script>\\n' + d.js + '\\n<\\/script>\\n</body>\\n</html>';
-                // Refresh display with highlights
                 var code = document.getElementById('lib-code');
                 var activeTab = document.querySelector('.lib-tab[style*="rgba(96,208,240"]');
                 if (code && activeTab) {
@@ -954,10 +978,10 @@ function stripProtectionAnnnimate(html) {
                   if (tab) code.innerHTML = highlightAttrs(esc(tab === 'full' ? store._full : store.html), changed);
                 }
               }
-            }, 200);
+            }, 300);
           }
         }
-        setTimeout(syncCustomize, 500);
+        setTimeout(syncCustomize, 1000);
 
         // Remove lock overlays
         document.querySelectorAll('.absolute.inset-0.flex.flex-col').forEach(function(el) { if (el.textContent.indexOf('Members customize') !== -1) el.remove(); });

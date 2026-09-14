@@ -731,6 +731,18 @@ function stripProtectionAnnnimate(html) {
 
   function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+  // Highlight data-anm-* attribute values in escaped HTML
+  var HL_STYLE = 'background:rgba(96,208,240,0.15);color:#60d0f0;border-radius:2px;padding:0 2px';
+  var HL_CHANGED = 'background:rgba(96,240,144,0.25);color:#60f090;border-radius:2px;padding:0 2px;transition:background 0.6s';
+  function highlightAttrs(escaped, changed) {
+    // Highlight data-anm-*="value" patterns in escaped HTML
+    return escaped.replace(/(data-anm-[a-z-]+)=&quot;([^&]*)&quot;/g, function(m, attr, val) {
+      var isChanged = changed && changed[attr];
+      var style = isChanged ? HL_CHANGED : HL_STYLE;
+      return '<span style="color:#f0a060">' + attr + '</span>=&quot;<span style="' + style + '">' + val + '</span>&quot;';
+    });
+  }
+
   // Reusable code viewer builder
   var TAB_STYLE = 'padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-family:monospace;border:1px solid ';
   var TAB_ACTIVE = TAB_STYLE + 'rgba(96,208,240,0.3);background:rgba(96,208,240,0.15);color:#60d0f0';
@@ -761,7 +773,7 @@ function stripProtectionAnnnimate(html) {
       + '<button onclick="switchTab(\\'' + id + '\\',this,\\'vue\\')" class="' + id + '-tab" style="' + TAB_STYLE + 'rgba(66,184,131,0.3);background:rgba(66,184,131,0.1);color:#42b883">◆ Vue</button>'
       + '<button onclick="copyCodeBlock(\\'' + id + '\\')" style="' + COPY_STYLE + '">📋 Copy</button>'
       + '</div>';
-    var pre = '<pre data-lenis-prevent style="' + PRE_STYLE + '"><code id="' + id + '-code">' + esc(data._full) + '</code></pre>';
+    var pre = '<pre data-lenis-prevent style="' + PRE_STYLE + '"><code id="' + id + '-code">' + highlightAttrs(esc(data._full)) + '</code></pre>';
     return bar + pre;
   }
 
@@ -771,27 +783,24 @@ function stripProtectionAnnnimate(html) {
     var store = window['_anmData_' + id];
     if (!code || !store) return;
 
-    // React/Vue: lazy-load from original endpoint
     if ((tab === 'react' || tab === 'vue') && !store['_' + tab]) {
       var slug = store._slug || window.location.pathname.match(/[\\w-]+$/)?.[0];
       code.textContent = 'Loading ' + tab + ' source...';
       fetch('/__proxy__/annnimate/original?component=' + slug + '&format=' + tab)
         .then(function(r) { return r.text(); })
-        .then(function(t) {
-          store['_' + tab] = t;
-          code.textContent = t;
-        })
+        .then(function(t) { store['_' + tab] = t; code.textContent = t; })
         .catch(function(e) { code.textContent = 'Error: ' + e.message; });
     } else if (tab === 'react' || tab === 'vue') {
       code.textContent = store['_' + tab];
     } else if (tab === 'full') {
-      code.textContent = store._full;
+      // Full tab: use innerHTML with highlighted data-anm-* attributes
+      code.innerHTML = highlightAttrs(esc(store._full), store._changed);
+    } else if (tab === 'html') {
+      code.innerHTML = highlightAttrs(esc(store.html), store._changed);
     } else if (tab === 'css') {
       code.textContent = store.css;
     } else if (tab === 'js') {
       code.textContent = store.js;
-    } else {
-      code.textContent = store.html;
     }
 
     document.querySelectorAll('.' + id + '-tab').forEach(function(b) { b.style.cssText = TAB_INACTIVE; });
@@ -909,35 +918,40 @@ function stripProtectionAnnnimate(html) {
           aside.addEventListener('change', rebuildFull);
 
           function rebuildFull() {
-            // Small delay to let annnimate's own handler update first
             setTimeout(function() {
               var d = window._anmOriginalData;
               if (!d) return;
               var customHtml = d.html;
+              var changed = {};
               // Read current values from the native customize controls
               aside.querySelectorAll('input[type="range"], select, input[type="text"]').forEach(function(ctrl) {
-                // Find which data-anm attribute this control maps to
                 var label = ctrl.closest('li, div')?.querySelector('span, label, div')?.textContent?.trim()?.toLowerCase();
                 if (!label) return;
-                // Match label to attribute (controls have names like "Duration" → data-anm-duration)
                 (d.controls || []).forEach(function(c) {
                   if (c.name.toLowerCase() === label && c.attribute) {
                     var re = new RegExp(c.attribute + '="[^"]*"');
                     var match = customHtml.match(re);
-                    if (match) customHtml = customHtml.replace(match[0], c.attribute + '="' + ctrl.value + '"');
+                    if (match) {
+                      var newVal = ctrl.value;
+                      customHtml = customHtml.replace(match[0], c.attribute + '="' + newVal + '"');
+                      // Track if value differs from default
+                      if (String(newVal) !== String(c.value)) changed[c.attribute] = true;
+                    }
                   }
                 });
               });
-              // Rebuild Full tab content
               var store = window._anmData_lib;
               if (store) {
                 store._customHtml = customHtml;
+                store._changed = changed;
+                store.html = customHtml;
                 store._full = '<!DOCTYPE html>\\n<html lang="en">\\n<head>\\n<meta charset="UTF-8">\\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\\n<style>\\n' + d.css + '\\n</style>\\n</head>\\n<body>\\n' + customHtml + '\\n<script>\\n' + d.js + '\\n<\\/script>\\n</body>\\n</html>';
-                // If Full tab is active, refresh display
+                // Refresh display with highlights
                 var code = document.getElementById('lib-code');
                 var activeTab = document.querySelector('.lib-tab[style*="rgba(96,208,240"]');
-                if (code && activeTab && activeTab.textContent.includes('Full')) {
-                  code.textContent = store._full;
+                if (code && activeTab) {
+                  var tab = activeTab.textContent.includes('Full') ? 'full' : activeTab.textContent.includes('HTML') ? 'html' : null;
+                  if (tab) code.innerHTML = highlightAttrs(esc(tab === 'full' ? store._full : store.html), changed);
                 }
               }
             }, 200);

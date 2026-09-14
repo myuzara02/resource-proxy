@@ -833,20 +833,28 @@ function stripProtectionAnnnimate(html) {
     var lockBox = document.querySelector('.flex.h-80.items-center.justify-center');
     if (!lockBox) return;
 
-    fetch('/__proxy__/annnimate/source?component=' + slug)
+    fetch('/__proxy__/annnimate/original?component=' + slug)
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        data._slug = slug;
-        window._anmData_lib = data;
+        // Map Supabase fields to code viewer format
+        var viewerData = {
+          _slug: slug,
+          html: data.html || '',
+          css: data.css || '',
+          js: data.js || '',
+          _react: data.react || '',
+          _vue: data.vue || '',
+          deps: data.dependencies || []
+        };
+        window._anmData_lib = viewerData;
         document.querySelectorAll('.flex.h-80.items-center.justify-center').forEach(function(lockInner) {
           var box = lockInner.closest('.flex.flex-col.overflow-hidden.border');
           if (!box) return;
-          // Remove overflow-hidden class so it doesn't clip, let <pre> handle scrolling
           box.className = box.className.replace('overflow-hidden', '');
           box.style.height = 'auto';
           box.style.maxHeight = 'none';
           box.style.overflow = 'visible';
-          box.innerHTML = buildCodeViewer('lib', data);
+          box.innerHTML = buildCodeViewer('lib', viewerData);
         });
         // Remove lock overlays
         document.querySelectorAll('.absolute.inset-0.flex.flex-col').forEach(function(el) { if (el.textContent.indexOf('Members customize') !== -1) el.remove(); });
